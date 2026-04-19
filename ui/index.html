@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Academic Paper Converter</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <div class="badge">AI Agent Workflow</div>
+      <h1>Academic Paper Converter</h1>
+      <p>Transform research papers between ACM and IEEE formats with AI-powered precision.</p>
+    </header>
+
+    <main class="container">
+      <section class="card upload-card">
+        <div class="upload-icon">📄</div>
+        <h2>PDF to LaTeX to ACM/IEEE Conversion</h2>
+        <p>Upload a PDF paper or LaTeX project. The system will extract content, generate LaTeX source, and convert to your target format.</p>
+        <div class="upload-meta">Support: PDF files or LaTeX project folders · End-to-end conversion pipeline · Structured reports included</div>
+        <form id="job-form" class="job-form">
+          <div class="input-row">
+            <div class="input-group">
+              <label for="input-path">Input path</label>
+              <input id="input-path" type="text" placeholder="C:\\path\\to\\paper-project" />
+            </div>
+            <button type="button" id="browse-btn" class="browse-btn">📁 Browse</button>
+          </div>
+          <div class="radio-row">
+            <label><input type="radio" name="direction" value="acm:ieee" checked /> ACM → IEEE</label>
+            <label><input type="radio" name="direction" value="ieee:acm" /> IEEE → ACM</label>
+          </div>
+        </form>
+      </section>
+
+      <section class="card direction-card">
+        <div class="section-head">
+          <h3>Conversion Direction</h3>
+          <span>Choose one route</span>
+        </div>
+        <div class="direction-grid">
+          <button type="button" class="direction selected" data-direction="acm:ieee">
+            <div>
+              <strong>ACM → IEEE</strong>
+              <span>Convert from ACM format to IEEE</span>
+            </div>
+            <b>⇄</b>
+          </button>
+          <button type="button" class="direction" data-direction="ieee:acm">
+            <div>
+              <strong>IEEE → ACM</strong>
+              <span>Convert from IEEE format to ACM</span>
+            </div>
+            <b>⇄</b>
+          </button>
+        </div>
+      </section>
+
+      <section class="card agents-card">
+        <div class="section-head">
+          <h3>Agent Workflow</h3>
+          <span>Specialized pipeline</span>
+        </div>
+        <div class="agent-grid">
+          <div class="agent-panel">
+            <div class="agent-name">April</div>
+            <p>IEEE → ACM specialist using CPR normalization first.</p>
+          </div>
+          <div class="agent-panel">
+            <div class="agent-name">Friday</div>
+            <p>ACM → IEEE specialist using CPR normalization first.</p>
+          </div>
+          <div class="agent-panel">
+            <div class="agent-name">Comp</div>
+            <p>Harmonization, validation, compile orchestration, and final packaging.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card advanced-card">
+        <div class="section-head">
+          <h3>Advanced Checks</h3>
+          <span>Production-quality goals</span>
+        </div>
+        <ul>
+          <li>CPR metadata enrichment: affiliations, notes, CCS, funding, conflicts</li>
+          <li>Deterministic validation of citations, references, and section requirements</li>
+          <li>Compile retries with actionable log snippets</li>
+          <li>Structured reports for conversion, harmonization, validation, and compile</li>
+        </ul>
+      </section>
+
+      <button class="convert-btn" type="submit" form="job-form">Convert Paper</button>
+
+      <section class="card info-card">
+        <strong>💡 How it works:</strong>
+        <span>
+          <strong>PDF users:</strong> Upload a PDF → Extract content & generate LaTeX → Convert to target format (ACM/IEEE) → Get polished output
+          <br><strong>LaTeX users:</strong> Upload your project folder → Convert between ACM and IEEE formats → Get harmonized, validated, and compiled result
+        </span>
+      </section>
+
+      <section class="card info-card" style="background: rgba(203,114,255,0.06); border-color: rgba(203,114,255,0.2);">
+        <strong>🚀 Quick Start:</strong>
+        <div style="margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap;">
+          <button type="button" class="sample-btn"
+                  data-sample-path="./samples/acm_sample"
+                  data-sample-direction="acm:ieee">
+            📁 Load ACM Sample (ACM → IEEE)
+          </button>
+          <button type="button" class="sample-btn"
+                  data-sample-path="./samples/ieee_sample"
+                  data-sample-direction="ieee:acm">
+            📁 Load IEEE Sample (IEEE → ACM)
+          </button>
+        </div>
+        <div style="margin-top: 10px; color: var(--muted); font-size: 0.92rem;">
+          Use Browse to choose your own local PDF or project folder.
+        </div>
+      </section>
+
+      <section class="status-grid" id="jobs">
+        <div class="card status-card">
+          <h4>Current Architecture</h4>
+          <p>Scaffolded and runnable locally through Python CLI.</p>
+        </div>
+        <div class="card status-card">
+          <h4>Missing Tooling</h4>
+          <p>LaTeX toolchain and pytest are still needed for full Definition of Done.</p>
+        </div>
+        <div class="card status-card">
+          <h4>Next Step</h4>
+          <p>Connect this UI to a local API and real OpenClaw agent sessions.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- File Picker Modal -->
+  <div id="file-picker-modal" class="modal" style="display:none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Browse Folder / Select File</h3>
+        <button type="button" class="modal-close" id="close-picker">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="padding:8px;margin-bottom:12px;background:rgba(122,168,255,0.1);border-radius:8px;border-left:4px solid #7aa8ff;color:var(--text);font-size:0.9rem;">
+          📂 Select a PDF file or LaTeX project folder • Double-click to select PDF or navigate folder
+        </div>
+        <div class="breadcrumb" id="breadcrumb"></div>
+        <div class="file-list" id="file-list"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="select-current" class="btn-primary">Select Current Path</button>
+        <button type="button" id="cancel-picker" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

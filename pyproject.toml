@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-conversion-system"
+version = "0.1.0"
+description = "Three-agent academic paper conversion system with CPR intermediate representation"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+pdf = [
+    "pdfplumber>=0.10.0",
+    "PyPDF>=3.0.0",
+    "pymupdf>=1.23.0",
+    "pillow>=10.0.0",
+    "pytesseract>=0.3.10",
+]
+latex = [
+    "jinja2>=3.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
