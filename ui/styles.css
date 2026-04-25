@@ -62,6 +62,31 @@ body {
   margin: 0 auto;
 }
 
+.status-banner {
+  margin-bottom: 18px;
+  padding: 14px 18px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: #fbfbff;
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.status-banner.status-ok {
+  border-color: #9fd7b0;
+  background: #f5fff7;
+}
+
+.status-banner.status-error {
+  border-color: #f0a0a0;
+  background: #fff5f5;
+}
+
+.status-banner.status-info {
+  border-color: #a7c0ff;
+  background: #f5f8ff;
+}
+
 .card {
   background: var(--card);
   border: 1px solid var(--line);
@@ -329,6 +354,10 @@ body {
   background: #fbfbff;
 }
 
+.job-error {
+  color: #a43d3d;
+}
+
 @media (max-width: 900px) {
   .agent-grid,
   .status-grid,
@@ -440,6 +469,57 @@ body {
   flex: 1;
 }
 
+.picker-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.shortcut-chip,
+.picker-up-btn {
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(122, 168, 255, 0.08);
+  color: #5d6bdb;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.shortcut-chip:hover,
+.picker-up-btn:hover {
+  background: rgba(122, 168, 255, 0.16);
+  border-color: #7aa8ff;
+}
+
+.picker-up-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.picker-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.picker-location {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--text);
+  font-size: 0.92rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .breadcrumb {
   display: flex;
   align-items: center;
@@ -519,6 +599,15 @@ body {
   max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-badge {
+  font-size: 0.75rem;
+  background: rgba(122, 168, 255, 0.2);
+  color: #5d6bdb;
+  padding: 2px 6px;
+  border-radius: 4px;
   white-space: nowrap;
 }
 

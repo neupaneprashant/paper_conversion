@@ -18,6 +18,7 @@ def main() -> None:
     convert.add_argument("--target-format", required=True, choices=["ieee", "acm"])
     convert.add_argument("--input", required=True)
     convert.add_argument("--workdir", required=True)
+    convert.add_argument("--fidelity-mode", choices=["preserve", "editable"], default="preserve")
 
     # New PDF to LaTeX command
     pdf2latex = sub.add_parser("pdf2latex")
@@ -32,6 +33,7 @@ def main() -> None:
             target_format=args.target_format,
             input_path=Path(args.input),
             workdir=Path(args.workdir),
+            fidelity_mode=args.fidelity_mode,
         )
         print(json.dumps(result.to_dict(), indent=2))
     

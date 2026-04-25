@@ -4,14 +4,20 @@ from pathlib import Path
 import re
 import fitz
 
-from .models import CanonicalPaperRepresentation, Section, Reference
+from .models import CanonicalPaperRepresentation, Figure, Section, Reference, Table
 from .pdf_cleanup import clean_pdf_text, aggressive_cleanup_pass
 from .pdf_doctype import detect_pdf_document_type, extract_thesis_body_text
 from .pdf_postprocess import refine_cpr_from_pdf
 from .pdf_thesis import parse_thesis_text_to_cpr
 
 
-def parse_pdf_to_cpr(pdf_path: Path, source_format_hint: str | None = None, cleanup_mode: str = "safe") -> CanonicalPaperRepresentation:
+def parse_pdf_to_cpr(
+    pdf_path: Path,
+    source_format_hint: str | None = None,
+    cleanup_mode: str = "safe",
+    assets_dir: Path | None = None,
+    fidelity_mode: str = "preserve",
+) -> CanonicalPaperRepresentation:
     """Parse a PDF into CPR.
 
     This function is the main PDF ingestion entrypoint. It detects document
@@ -23,10 +29,24 @@ def parse_pdf_to_cpr(pdf_path: Path, source_format_hint: str | None = None, clea
     pages = [page.get_text() for page in doc]
     raw_text = "\n\n".join(pages)
     doc_type, doc_meta = detect_pdf_document_type(raw_text)
+    extracted_images = _extract_embedded_images(doc, assets_dir)
+    (
+        page_figures,
+        page_tables,
+        equation_artifacts,
+        figure_section_map,
+        figure_anchor_map,
+        table_section_map,
+        table_anchor_map,
+        table_text_map,
+        equation_text_map,
+    ) = _extract_page_level_visuals(doc, assets_dir, extracted_images)
     if doc_type == "thesis_dissertation":
         cpr = parse_thesis_text_to_cpr(raw_text, source_path=str(pdf_path))
         cpr.metadata["document_type_meta"] = doc_meta
         cpr.metadata["page_count"] = len(doc)
+        if extracted_images:
+            cpr.metadata["extracted_figure_assets"] = extracted_images
         return cpr
 
     text_source = raw_text
@@ -47,6 +67,16 @@ def parse_pdf_to_cpr(pdf_path: Path, source_format_hint: str | None = None, clea
         "cleanup": cleanup_meta,
         "document_type": doc_type,
         "document_type_meta": doc_meta,
+        "fidelity_mode": fidelity_mode,
+        "bibliography_mode": "thebibliography" if fidelity_mode == "preserve" else "bibtex",
+        "extracted_figure_assets": extracted_images,
+        "figure_section_map": figure_section_map,
+        "figure_anchor_map": figure_anchor_map,
+        "table_section_map": table_section_map,
+        "table_anchor_map": table_anchor_map,
+        "table_text_map": table_text_map,
+        "equation_text_map": equation_text_map,
+        "equation_artifacts": equation_artifacts,
     })
 
     cpr = CanonicalPaperRepresentation(
@@ -59,6 +89,8 @@ def parse_pdf_to_cpr(pdf_path: Path, source_format_hint: str | None = None, clea
         metadata=metadata,
     )
     cpr = refine_cpr_from_pdf(cpr)
+    cpr = _merge_page_level_visuals(cpr, page_figures, page_tables)
+    cpr = _attach_extracted_figure_assets(cpr, extracted_images)
 
     if doc_type == "thesis_dissertation":
         cpr.metadata.setdefault("warnings", []).append(
@@ -71,11 +103,794 @@ def parse_pdf_to_cpr(pdf_path: Path, source_format_hint: str | None = None, clea
         if len(aggressive_sections) >= max(3, len(cpr.sections) - 1):
             cpr.sections = aggressive_sections
             cpr.metadata["cleanup"]["aggressive_applied"] = True
+            cpr = refine_cpr_from_pdf(cpr)
+            cpr = _merge_page_level_visuals(cpr, page_figures, page_tables)
+            cpr = _attach_extracted_figure_assets(cpr, extracted_images)
         else:
             cpr.metadata["cleanup"]["aggressive_applied"] = False
     else:
         cpr.metadata["cleanup"]["aggressive_applied"] = False
 
+    return cpr
+
+
+def _extract_embedded_images(doc: fitz.Document, assets_dir: Path | None) -> list[str]:
+    """Extract non-trivial embedded raster images from a PDF.
+
+    The PDF path is used only for ingestion, so any recovered image assets must
+    be written into the job workspace before rendering. We filter out tiny
+    decorative assets like logos/icons to avoid polluting the converted output.
+    """
+    if assets_dir is None:
+        return []
+
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    seen_xrefs: set[int] = set()
+    extracted: list[str] = []
+    min_dimension = 120
+    min_area = 24_000
+
+    for page_index in range(doc.page_count):
+        page = doc[page_index]
+        for image_index, image_meta in enumerate(page.get_images(full=True), start=1):
+            xref = image_meta[0]
+            if xref in seen_xrefs:
+                continue
+            seen_xrefs.add(xref)
+            try:
+                payload = doc.extract_image(xref)
+            except Exception:
+                continue
+            width = int(payload.get("width") or 0)
+            height = int(payload.get("height") or 0)
+            if width < min_dimension or height < min_dimension or (width * height) < min_area:
+                continue
+            image_bytes = payload.get("image")
+            ext = str(payload.get("ext") or "png").lower()
+            if not image_bytes:
+                continue
+            filename = f"figure_p{page_index + 1}_{image_index}.{ext}"
+            out_path = assets_dir / filename
+            out_path.write_bytes(image_bytes)
+            extracted.append(f"figures/{filename}")
+    return extracted
+
+
+def _attach_extracted_figure_assets(
+    cpr: CanonicalPaperRepresentation,
+    extracted_images: list[str],
+) -> CanonicalPaperRepresentation:
+    if not extracted_images:
+        return cpr
+
+    warnings = cpr.metadata.setdefault("warnings", [])
+
+    paired = 0
+    for fig, image_path in zip(cpr.figures, extracted_images):
+        if not fig.path:
+            fig.path = image_path
+        fig.placement = "H"
+        paired += 1
+
+    if len(extracted_images) > len(cpr.figures):
+        for index, image_path in enumerate(extracted_images[len(cpr.figures):], start=len(cpr.figures) + 1):
+            cpr.figures.append(
+                Figure(
+                    label=f"fig:extracted{index}",
+                    caption=f"Extracted figure {index}",
+                    path=image_path,
+                    placement="H",
+                )
+            )
+        warnings.append(
+            f"Recovered {len(extracted_images)} embedded image asset(s) but only detected "
+            f"{len(cpr.figures) - (len(extracted_images) - paired)} caption(s); added generic figure entries for extras."
+        )
+    elif len(extracted_images) < len(cpr.figures):
+        warnings.append(
+            f"Detected {len(cpr.figures)} figure caption(s) but only recovered "
+            f"{len(extracted_images)} embedded image asset(s); some figures remain placeholders."
+        )
+
+    return cpr
+
+
+def _extract_page_level_visuals(
+    doc: fitz.Document,
+    assets_dir: Path | None,
+    extracted_images: list[str],
+) -> tuple[list[Figure], list[Table], list[dict], dict[str, str], dict[str, str], dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+    figures: list[Figure] = []
+    tables: list[Table] = []
+    equation_artifacts: list[dict] = []
+    figure_section_map: dict[str, str] = {}
+    figure_anchor_map: dict[str, str] = {}
+    table_section_map: dict[str, str] = {}
+    table_anchor_map: dict[str, str] = {}
+    table_text_map: dict[str, str] = {}
+    equation_text_map: dict[str, str] = {}
+    image_iter = iter(extracted_images)
+    artifact_root = assets_dir.parent / "artifacts" if assets_dir is not None else None
+    figure_root = assets_dir if assets_dir is not None else None
+    table_root = artifact_root / "tables" if artifact_root is not None else None
+    equation_root = artifact_root / "equations" if artifact_root is not None else None
+
+    if figure_root is not None:
+        figure_root.mkdir(parents=True, exist_ok=True)
+    if table_root is not None:
+        table_root.mkdir(parents=True, exist_ok=True)
+    if equation_root is not None:
+        equation_root.mkdir(parents=True, exist_ok=True)
+
+    for page_index in range(doc.page_count):
+        page = doc[page_index]
+        lines = _collect_page_lines(page.get_text("dict"))
+        for idx, line in enumerate(lines):
+            fig_match = re.match(r"(?:Fig\.?|Figure)\s*(\d+)\.?\s*(.*)$", line["text"], flags=re.I)
+            if fig_match:
+                number = fig_match.group(1)
+                caption = fig_match.group(2).strip(" .:-")
+                if not caption and idx + 1 < len(lines):
+                    caption = lines[idx + 1]["text"].strip(" .:-")
+                if caption:
+                    label = f"fig:{number}"
+                    image_rel = next(image_iter, "")
+                    if not image_rel and figure_root is not None:
+                        figure_bbox = _detect_figure_region(page, lines, idx)
+                        if figure_bbox is not None:
+                            image_rel = _crop_region(
+                                page,
+                                figure_bbox,
+                                figure_root / f"figure_p{page_index + 1}_{number}.png",
+                                rel_prefix="figures",
+                            )
+                    figures.append(
+                        Figure(
+                            label=label,
+                            caption=_cleanup(caption),
+                            path=image_rel,
+                            placement="H",
+                        )
+                    )
+                    figure_section_map[label] = _infer_section_title(lines, idx)
+                    figure_anchor_map[label] = _anchor_from_lines(lines, idx)
+
+        for table_idx, region in enumerate(_detect_table_regions(lines, page.rect.width), start=1):
+            caption = region["caption"]
+            label = region["label"]
+            image_rel = ""
+            if table_root is not None:
+                image_rel = _crop_region(
+                    page,
+                    region["bbox"],
+                    table_root / f"table_p{page_index + 1}_{table_idx}.png",
+                    rel_prefix="artifacts/tables",
+                )
+            latex = _table_lines_to_latex(region["data_lines"])
+            if image_rel:
+                latex = "\\centering\n" + f"\\includegraphics[width=\\linewidth]{{{image_rel}}}"
+            tables.append(Table(label=label, caption=_cleanup(caption), latex=latex, placement="H"))
+            table_section_map[label] = region["section_title"]
+            table_anchor_map[label] = region["anchor_text"]
+            table_text_map[label] = region["raw_text"]
+
+        for eq_idx, equation in enumerate(_detect_equation_regions(lines, page.rect.width), start=1):
+            if equation_root is None:
+                continue
+            label = f"eqimg:{page_index + 1}:{eq_idx}"
+            image_rel = _crop_region(
+                page,
+                equation["bbox"],
+                equation_root / f"equation_p{page_index + 1}_{eq_idx}.png",
+                rel_prefix="artifacts/equations",
+            )
+            equation_artifacts.append(
+                {
+                    "label": label,
+                    "path": image_rel,
+                    "anchor_text": equation["anchor_text"],
+                    "section_title": equation["section_title"],
+                    "placement": "H",
+                    "raw_text": equation["raw_text"],
+                    "raw_lines": equation.get("raw_lines", []),
+                    "scrub_variants": equation.get("scrub_variants", []),
+                }
+            )
+            equation_text_map[label] = equation["raw_text"]
+
+    return (
+        figures,
+        tables,
+        equation_artifacts,
+        figure_section_map,
+        figure_anchor_map,
+        table_section_map,
+        table_anchor_map,
+        table_text_map,
+        equation_text_map,
+    )
+
+
+def _table_lines_to_latex(lines: list[str]) -> str:
+    cleaned = [re.sub(r"\s+", " ", line).strip() for line in lines if line.strip()]
+    cleaned = [
+        line for line in cleaned
+        if not re.search(r"Authorized licensed use|IEEE .*Conference|Downloaded on", line, re.I)
+    ]
+    if len(cleaned) < 3:
+        return "% reconstructed table unavailable"
+
+    header_cols = 3 if len(cleaned) >= 6 else min(3, len(cleaned))
+    headers = cleaned[:header_cols]
+    body = cleaned[header_cols:]
+    rows = [headers]
+    if body:
+        for start in range(0, len(body), header_cols):
+            row = body[start:start + header_cols]
+            if len(row) == header_cols:
+                rows.append(row)
+
+    if len(rows) < 2:
+        return "% reconstructed table unavailable"
+
+    def esc(cell: str) -> str:
+        return (
+            cell.replace("\\", r"\textbackslash{}")
+            .replace("&", r"\&")
+            .replace("%", r"\%")
+            .replace("#", r"\#")
+            .replace("_", r"\_")
+        )
+
+    col_spec = " | ".join(["l"] * len(rows[0]))
+    latex_lines = [f"\\begin{{tabular}}{{{col_spec}}}", "\\hline"]
+    for row_idx, row in enumerate(rows):
+        latex_lines.append(" & ".join(esc(cell) for cell in row) + r" \\")
+        if row_idx == 0:
+            latex_lines.append("\\hline")
+    latex_lines.append("\\hline")
+    latex_lines.append("\\end{tabular}")
+    return "\n".join(latex_lines)
+
+
+def _collect_page_lines(page_dict: dict) -> list[dict]:
+    lines: list[dict] = []
+    for block in page_dict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            spans = line.get("spans", [])
+            text = "".join(span.get("text", "") for span in spans).strip()
+            if not text:
+                continue
+            bbox = tuple(line.get("bbox") or block.get("bbox"))
+            lines.append({"text": _cleanup(text), "bbox": bbox})
+    lines.sort(key=lambda item: (item["bbox"][1], item["bbox"][0]))
+    return lines
+
+
+def _anchor_from_lines(
+    lines: list[dict],
+    idx: int,
+    max_lines: int = 4,
+    origin_bbox: tuple[float, float, float, float] | None = None,
+    page_width: float | None = None,
+) -> str:
+    anchor_lines: list[str] = []
+    for candidate in reversed(lines[:idx]):
+        text = candidate["text"]
+        if not text:
+            continue
+        if origin_bbox is not None and page_width is not None and not _same_column(candidate["bbox"], origin_bbox, page_width):
+            continue
+        if re.match(r"(?:TABLE\s+[IVXLC0-9]+|Fig\.\s*\d+|REFERENCES$)", text, flags=re.I):
+            continue
+        anchor_lines.append(text)
+        if len(anchor_lines) >= max_lines:
+            break
+    anchor_lines.reverse()
+    return _cleanup(" ".join(anchor_lines))
+
+
+def _infer_section_title(lines: list[dict], idx: int) -> str:
+    for candidate in reversed(lines[: idx + 1]):
+        match = re.match(r"([IVX]+)\.\s+([A-Z][A-Z\s\-]+)$", candidate["text"])
+        if match:
+            return _normalize_heading(candidate["text"])
+    return ""
+
+
+def _detect_table_regions(lines: list[dict], page_width: float) -> list[dict]:
+    regions: list[dict] = []
+    idx = 0
+    while idx < len(lines):
+        match = re.match(r"TABLE\s+([IVXLC0-9]+)\s*$", lines[idx]["text"], flags=re.I)
+        if not match:
+            idx += 1
+            continue
+        label = f"tab:{match.group(1).lower()}"
+        origin_bbox = lines[idx]["bbox"]
+        section_title = _infer_section_title(lines, idx)
+        anchor_text = _anchor_from_lines(lines, idx, origin_bbox=origin_bbox, page_width=page_width)
+        region_lines = [lines[idx]]
+        end = idx + 1
+        last_y = origin_bbox[3]
+        while end < len(lines):
+            current_line = lines[end]
+            current = current_line["text"]
+            if _same_column(current_line["bbox"], origin_bbox, page_width):
+                if len(region_lines) > 1 and (current_line["bbox"][1] - last_y) > 42:
+                    break
+                if re.match(r"(?:TABLE\s+[IVXLC0-9]+|[A-Z]\.\s+[A-Z]|[IVX]+\.\s+[A-Z]|REFERENCES$)", current, flags=re.I):
+                    break
+                if len(region_lines) >= 3 and _looks_like_body_paragraph(current):
+                    break
+                region_lines.append(current_line)
+                last_y = current_line["bbox"][3]
+            elif len(region_lines) > 1 and current_line["bbox"][1] > last_y + 42:
+                break
+            end += 1
+        caption, caption_idx = _select_table_caption(region_lines, label, page_width)
+        data_lines = [line["text"] for line in region_lines[caption_idx + 1:]]
+        bbox = _union_bboxes([line["bbox"] for line in region_lines])
+        regions.append(
+            {
+                "label": label,
+                "caption": caption,
+                "bbox": bbox,
+                "data_lines": data_lines,
+                "section_title": section_title,
+                "anchor_text": anchor_text,
+                "raw_text": _cleanup(" ".join(line["text"] for line in region_lines)),
+            }
+        )
+        idx = end
+    return regions
+
+
+def _detect_equation_regions(lines: list[dict], page_width: float) -> list[dict]:
+    regions: list[dict] = []
+    idx = 0
+    while idx < len(lines):
+        if not _looks_like_equation_line(lines[idx]["text"], lines[idx]["bbox"], page_width):
+            idx += 1
+            continue
+        origin_bbox = lines[idx]["bbox"]
+        region_lines = [lines[idx]]
+        region_bbox = fitz.Rect(origin_bbox)
+
+        start = idx - 1
+        while start >= 0:
+            current_line = lines[start]
+            if (region_bbox.y0 - current_line["bbox"][3]) > 20:
+                break
+            if _equation_line_should_join(current_line, region_bbox, page_width):
+                region_lines.insert(0, current_line)
+                region_bbox = _union_bboxes([line["bbox"] for line in region_lines])
+            start -= 1
+
+        end = idx + 1
+        while end < len(lines):
+            current_line = lines[end]
+            if current_line["bbox"][1] > region_bbox.y1 + 26:
+                break
+            if _equation_line_should_join(current_line, region_bbox, page_width):
+                region_lines.append(current_line)
+                region_bbox = _union_bboxes([line["bbox"] for line in region_lines])
+            end += 1
+
+        if len(region_lines) < 2 and not _has_nearby_equation_context(lines, idx, page_width):
+            idx += 1
+            continue
+
+        raw_lines = [line["text"] for line in region_lines]
+        if not _equation_region_has_display_math(raw_lines):
+            idx = end
+            continue
+        bbox = _union_bboxes([line["bbox"] for line in region_lines])
+        regions.append(
+            {
+                "bbox": bbox,
+                "section_title": _infer_section_title(lines, idx),
+                "anchor_text": _anchor_from_lines(lines, idx, origin_bbox=origin_bbox, page_width=page_width),
+                "raw_text": _cleanup(_linearize_equation_lines(raw_lines)),
+                "raw_lines": raw_lines,
+                "scrub_variants": _equation_scrub_variants(raw_lines),
+            }
+        )
+        idx = end
+    return regions
+
+
+def _looks_like_equation_line(text: str, bbox: tuple[float, float, float, float], page_width: float) -> bool:
+    compact = text.strip()
+    if len(compact) < 3 or len(compact) > 120:
+        return False
+    if compact.endswith("."):
+        return False
+    if _looks_like_body_paragraph(compact):
+        return False
+    width = bbox[2] - bbox[0]
+    centered = abs(((bbox[0] + bbox[2]) / 2) - (page_width / 2)) < (page_width * 0.18)
+    narrow = width < (page_width * 0.7)
+    has_math = bool(re.search(r"(?:[+\-*/^_()]|log|sqrt)", compact)) or any(ch in compact for ch in ("γ", "√", "Σ", "∫"))
+    if not (centered or narrow):
+        return False
+    lowered = compact.lower()
+    if lowered.startswith(("where ", "table ", "actual ", "estimated ", "difference ")):
+        return False
+    if len(compact.split()) > 4 and "=" not in compact and not re.search(r"[\d()]", compact):
+        return False
+    strong_math = bool(re.search(r"(?:=|[+*/^_]|(?<=[0-9)])\s*-\s*(?=[0-9A-Za-z(])|log|sqrt|×|−|≤|≥)", compact))
+    strong_math = strong_math or any(ch in compact for ch in ("γ", "√", "Σ", "∫"))
+    if "=" in compact and len(re.findall(r"\d+", compact)) >= 5 and not re.search(r"[+*/()]", compact):
+        return False
+    symbolic_run = bool(re.search(r"[A-Za-z0-9)]\s*(?:[+*/=])\s*[A-Za-z0-9(]", compact))
+    return strong_math or symbolic_run
+    has_math = bool(re.search(r"(?:=|[+\-*/^_()]|log|sqrt|×|−|≤|≥)", compact))
+    has_math = has_math or any(ch in compact for ch in ("Î³", "γ", "âˆš", "√", "Î£", "Σ", "âˆ«", "∫"))
+    has_grouping = bool(re.search(r"\([^)]*[A-Za-z0-9][^)]*\)", compact))
+    has_symbolic_run = bool(re.search(r"[A-Za-z]\s*[+\-×*/=]\s*[A-Za-z0-9(]", compact))
+    return has_math or has_grouping or has_symbolic_run
+
+
+def _equation_line_should_join(line: dict, region_bbox: fitz.Rect, page_width: float) -> bool:
+    bbox = line["bbox"]
+    text = line["text"]
+    if not _equation_horizontally_related(bbox, region_bbox, page_width):
+        return False
+    if _looks_like_equation_line(text, bbox, page_width):
+        return True
+    return _looks_like_equation_satellite_line(text, bbox, page_width)
+
+
+def _equation_horizontally_related(
+    bbox: tuple[float, float, float, float],
+    region_bbox: fitz.Rect,
+    page_width: float,
+) -> bool:
+    candidate_center = (bbox[0] + bbox[2]) / 2
+    region_center = (region_bbox.x0 + region_bbox.x1) / 2
+    if abs(candidate_center - region_center) <= (page_width * 0.18):
+        return True
+    if bbox[2] >= region_bbox.x0 - 24 and bbox[0] <= region_bbox.x1 + 84:
+        return True
+    return _column_bucket(bbox, page_width) == _column_bucket((region_bbox.x0, region_bbox.y0, region_bbox.x1, region_bbox.y1), page_width)
+
+
+def _looks_like_equation_satellite_line(text: str, bbox: tuple[float, float, float, float], page_width: float) -> bool:
+    compact = text.strip()
+    if not compact or len(compact) > 48:
+        return False
+    if compact.endswith("."):
+        return False
+    width = bbox[2] - bbox[0]
+    centered = abs(((bbox[0] + bbox[2]) / 2) - (page_width / 2)) < (page_width * 0.18)
+    narrow = width < (page_width * 0.55)
+    if not (centered or narrow):
+        return False
+    if re.fullmatch(r"\(\d+\)", compact):
+        return True
+    if re.fullmatch(r"[A-Za-z]\d*", compact):
+        return True
+    if re.fullmatch(r"\d+", compact):
+        return True
+    if _looks_like_body_paragraph(compact):
+        return False
+    if len(compact.split()) > 4 and not re.search(r"[\d()]", compact):
+        return False
+    if len(compact.split()) > 6:
+        return False
+    return bool(
+        re.search(r"(?:=|[+*/^_]|(?<=[0-9)])\s*-\s*(?=[0-9A-Za-z(])|log|sqrt|×|−|≤|≥)", compact)
+        or any(ch in compact for ch in ("γ", "√", "Σ", "∫"))
+    )
+    return bool(
+        re.search(r"(?:[+\-*/^_()=]|log|sqrt|×|−|≤|≥)", compact)
+        or any(ch in compact for ch in ("Î³", "γ", "âˆš", "√", "Î£", "Σ", "âˆ«", "∫"))
+    )
+
+
+def _has_nearby_equation_context(lines: list[dict], idx: int, page_width: float) -> bool:
+    anchor_bbox = lines[idx]["bbox"]
+    for offset in (-2, -1, 1, 2):
+        probe_idx = idx + offset
+        if probe_idx < 0 or probe_idx >= len(lines):
+            continue
+        probe = lines[probe_idx]
+        if abs(probe["bbox"][1] - anchor_bbox[1]) > 36:
+            continue
+        if _equation_horizontally_related(probe["bbox"], fitz.Rect(anchor_bbox), page_width) and (
+            _looks_like_equation_line(probe["text"], probe["bbox"], page_width)
+            or _looks_like_equation_satellite_line(probe["text"], probe["bbox"], page_width)
+        ):
+            return True
+    return False
+
+
+def _linearize_equation_lines(raw_lines: list[str]) -> str:
+    chunks: list[str] = []
+    equation_numbers: list[str] = []
+    pending_prefix: list[str] = []
+
+    for raw in raw_lines:
+        line = _cleanup(raw)
+        if not line:
+            continue
+        if re.fullmatch(r"\(\d+\)", line):
+            equation_numbers.append(line)
+            continue
+        if _is_short_equation_satellite(line):
+            if chunks:
+                chunks[-1] = f"{chunks[-1]} {line}".strip()
+            else:
+                pending_prefix.append(line)
+            continue
+        if pending_prefix:
+            line = " ".join([line, *pending_prefix]).strip()
+            pending_prefix.clear()
+        if chunks and (_equation_chunk_needs_continuation(chunks[-1]) or _equation_fragment_belongs_to_previous(line)):
+            chunks[-1] = f"{chunks[-1]} {line}".strip()
+        else:
+            chunks.append(line)
+
+    if pending_prefix:
+        if chunks:
+            chunks[-1] = f"{chunks[-1]} {' '.join(pending_prefix)}".strip()
+        else:
+            chunks.extend(pending_prefix)
+
+    if equation_numbers:
+        chunks.extend(equation_numbers)
+    return " ".join(chunks).strip()
+
+
+def _equation_scrub_variants(raw_lines: list[str]) -> list[str]:
+    cleaned_lines = [_cleanup(line) for line in raw_lines if _cleanup(line)]
+    if not cleaned_lines:
+        return []
+
+    variants: list[str] = []
+
+    def add(candidate: str) -> None:
+        normalized = _cleanup(candidate)
+        if normalized and normalized not in variants:
+            variants.append(normalized)
+
+    add(" ".join(cleaned_lines))
+    add(_linearize_equation_lines(cleaned_lines))
+
+    non_numbers = [line for line in cleaned_lines if not re.fullmatch(r"\(\d+\)", line)]
+    equation_numbers = [line for line in cleaned_lines if re.fullmatch(r"\(\d+\)", line)]
+    if len(non_numbers) >= 2:
+        operator_fragments = [line for line in non_numbers[1:] if re.search(r"[×+\-*/=]", line)]
+        variable_fragments = [line for line in non_numbers[1:] if re.fullmatch(r"[A-Za-z]\d*", line)]
+        if operator_fragments and variable_fragments:
+            add(" ".join([non_numbers[0], *variable_fragments, *operator_fragments, *equation_numbers]))
+        assignment_fragments = [line for line in non_numbers if line.endswith("=")]
+        formula_fragments = [line for line in non_numbers if line not in assignment_fragments and re.search(r"[()]", line)]
+        if assignment_fragments and formula_fragments:
+            add(" ".join([assignment_fragments[0], *variable_fragments, *formula_fragments, *equation_numbers]))
+
+    return variants
+
+
+def _equation_region_has_display_math(raw_lines: list[str]) -> bool:
+    for raw in raw_lines:
+        compact = _cleanup(raw)
+        if not compact:
+            continue
+        if re.search(r"(?:[+*/^_]|log|sqrt|×|√|γ|Σ|∫)", compact):
+            return True
+        if "=" in compact and not re.fullmatch(r"[A-Za-z]\d*\s*=\s*\d+(?:\.\d+)?", compact):
+            return True
+    return False
+
+
+def _is_short_equation_satellite(text: str) -> bool:
+    return bool(re.fullmatch(r"(?:[A-Za-z]\d*|\d+)", text))
+
+
+def _equation_chunk_needs_continuation(text: str) -> bool:
+    return text.endswith(("=", "+", "-", "×", "/", "(", "{"))
+
+
+def _equation_fragment_belongs_to_previous(text: str) -> bool:
+    compact = text.strip()
+    return compact.startswith(("(", "×", "√")) or bool(re.match(r"^[A-Za-z]\d*$", compact))
+
+
+def _same_column(
+    bbox_a: tuple[float, float, float, float],
+    bbox_b: tuple[float, float, float, float],
+    page_width: float,
+) -> bool:
+    return _column_bucket(bbox_a, page_width) == _column_bucket(bbox_b, page_width)
+
+
+def _column_bucket(bbox: tuple[float, float, float, float], page_width: float) -> str:
+    center_x = (bbox[0] + bbox[2]) / 2
+    if center_x < page_width * 0.43:
+        return "left"
+    if center_x > page_width * 0.57:
+        return "right"
+    return "center"
+
+
+def _detect_figure_region(page: fitz.Page, lines: list[dict], caption_idx: int) -> fitz.Rect | None:
+    caption = lines[caption_idx]
+    caption_bbox = caption["bbox"]
+    page_width = page.rect.width
+    column = _column_bucket(caption_bbox, page_width)
+    top = max(28.0, caption_bbox[1] - 260.0)
+    bottom = caption_bbox[1] - 2.0
+
+    candidates: list[tuple[float, float, float, float]] = []
+    for bbox in _page_nontext_bboxes(page):
+        if _bbox_in_figure_band(bbox, caption_bbox, column, page_width, top, bottom):
+            candidates.append(bbox)
+
+    for line in lines[:caption_idx]:
+        bbox = line["bbox"]
+        text = line["text"]
+        if not _bbox_in_figure_band(bbox, caption_bbox, column, page_width, top, bottom):
+            continue
+        if _line_should_not_be_cropped_as_figure(text):
+            continue
+        candidates.append(bbox)
+
+    if not candidates:
+        return None
+
+    region = _union_bboxes(candidates)
+    if region.height < 18 or region.width < 24:
+        return None
+    x0, x1 = _figure_column_bounds(column, page_width)
+    region.x0 = max(x0, min(region.x0, caption_bbox[0] - 24))
+    region.x1 = min(x1, max(region.x1, caption_bbox[2] + 24))
+    region.y0 = max(28.0, region.y0 - 4)
+    region.y1 = min(caption_bbox[1] - 2, region.y1 + 4)
+    if region.height < 18 or region.width < 24:
+        return None
+    return region
+
+
+def _page_nontext_bboxes(page: fitz.Page) -> list[tuple[float, float, float, float]]:
+    bboxes: list[tuple[float, float, float, float]] = []
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type") != 0 and block.get("bbox"):
+            bboxes.append(tuple(block["bbox"]))
+    for drawing in page.get_drawings():
+        rect = drawing.get("rect")
+        if rect is None:
+            continue
+        if rect.width < 2 and rect.height < 2:
+            continue
+        bboxes.append((rect.x0, rect.y0, rect.x1, rect.y1))
+    return bboxes
+
+
+def _bbox_in_figure_band(
+    bbox: tuple[float, float, float, float],
+    caption_bbox: tuple[float, float, float, float],
+    column: str,
+    page_width: float,
+    top: float,
+    bottom: float,
+) -> bool:
+    if bbox[3] < top or bbox[1] > bottom:
+        return False
+    if column == "center":
+        return True
+    return _column_bucket(bbox, page_width) == column
+
+
+def _figure_column_bounds(column: str, page_width: float) -> tuple[float, float]:
+    if column == "left":
+        return 36.0, page_width * 0.5 - 6.0
+    if column == "right":
+        return page_width * 0.5 + 6.0, page_width - 36.0
+    return 36.0, page_width - 36.0
+
+
+def _line_should_not_be_cropped_as_figure(text: str) -> bool:
+    compact = text.strip()
+    if not compact:
+        return True
+    if re.match(r"(?:Fig\.?|Figure)\s*\d+", compact, re.I):
+        return True
+    if re.match(r"(?:[A-Z]\.\s+[A-Z]|[IVX]+\.\s+[A-Z]|TABLE\s+[IVXLC0-9]+|REFERENCES$)", compact, re.I):
+        return True
+    if re.search(r"Authorized licensed use|Downloaded on|IEEE .*Conference", compact, re.I):
+        return True
+    return _looks_like_body_paragraph(compact)
+
+
+def _select_table_caption(region_lines: list[dict], fallback: str, page_width: float) -> tuple[str, int]:
+    for idx, line in enumerate(region_lines[1:], start=1):
+        text = line["text"]
+        if _looks_like_equation_line(text, line["bbox"], page_width):
+            continue
+        if _looks_like_table_data_line(text):
+            continue
+        if re.match(r"^\[\d+\]", text):
+            continue
+        if 2 <= len(text.split()) <= 12:
+            return text, idx
+    return fallback, 0
+
+
+def _looks_like_table_data_line(text: str) -> bool:
+    compact = text.strip()
+    if re.search(r"\(\s*-?\d", compact):
+        return True
+    if len(re.findall(r"\d", compact)) >= 4 and len(compact.split()) <= 12:
+        return True
+    return False
+
+
+def _looks_like_body_paragraph(text: str) -> bool:
+    words = text.split()
+    if len(words) < 10:
+        return False
+    lowercase_words = sum(1 for word in words if any(ch.islower() for ch in word))
+    return lowercase_words >= max(4, len(words) // 2)
+
+
+def _union_bboxes(bboxes: list[tuple[float, float, float, float]]) -> fitz.Rect:
+    x0 = min(b[0] for b in bboxes)
+    y0 = min(b[1] for b in bboxes)
+    x1 = max(b[2] for b in bboxes)
+    y1 = max(b[3] for b in bboxes)
+    return fitz.Rect(x0, y0, x1, y1)
+
+
+def _crop_region(page: fitz.Page, bbox: fitz.Rect, out_path: Path, rel_prefix: str) -> str:
+    clip = fitz.Rect(bbox)
+    clip.x0 = max(0, clip.x0 - 6)
+    clip.y0 = max(0, clip.y0 - 6)
+    clip.x1 = min(page.rect.width, clip.x1 + 6)
+    clip.y1 = min(page.rect.height, clip.y1 + 6)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, alpha=False)
+    pix.save(out_path)
+    return f"{rel_prefix}/{out_path.name}".replace("\\", "/")
+
+
+def _merge_page_level_visuals(
+    cpr: CanonicalPaperRepresentation,
+    page_figures: list[Figure],
+    page_tables: list[Table],
+) -> CanonicalPaperRepresentation:
+    if page_figures:
+        by_label = {fig.label: fig for fig in cpr.figures}
+        for page_fig in page_figures:
+            existing = by_label.get(page_fig.label)
+            if existing is None:
+                cpr.figures.append(page_fig)
+                by_label[page_fig.label] = page_fig
+                continue
+            if page_fig.caption and (
+                len(page_fig.caption) < len(existing.caption)
+                or existing.caption.lower().startswith("overview validation")
+            ):
+                existing.caption = page_fig.caption
+            if page_fig.path and not existing.path:
+                existing.path = page_fig.path
+            existing.placement = "H"
+
+    if page_tables:
+        by_label = {table.label: table for table in cpr.tables}
+        for page_table in page_tables:
+            existing = by_label.get(page_table.label)
+            if existing is None:
+                cpr.tables.append(page_table)
+                by_label[page_table.label] = page_table
+                continue
+            if page_table.caption and len(page_table.caption) < len(existing.caption):
+                existing.caption = page_table.caption
+            if page_table.latex and "% reconstructed table unavailable" in existing.latex:
+                existing.latex = page_table.latex
     return cpr
 
 
@@ -120,7 +935,16 @@ _CONF_BANNER_RE = re.compile(
 )
 
 # Markers that end the frontmatter scan (title/author region).
-_FRONTMATTER_END_RE = re.compile(r"abstract|index\s*terms|keywords|i\.\s*introduction", re.I)
+_FRONTMATTER_END_RE = re.compile(r"abstract|index\s*terms|keywords|(?:i\.\s*|(?:\d+(?:\.\d+)?\.?\s*)?)introduction\b", re.I)
+_AFFILIATION_LINE_HINTS = {
+    "university", "department", "engineering", "science", "technology",
+    "institute", "college", "school", "laboratory", "research", "center",
+    "faculty", "campus", "academy",
+}
+_GEOGRAPHIC_TOKENS = {
+    "north", "south", "east", "west", "usa", "us", "uk", "uae", "nc", "ny", "ca", "dc",
+    "carolina", "louisiana", "washington",
+}
 
 
 def _extract_frontmatter(lines: list[str]) -> tuple[str, list[str], dict]:
@@ -136,7 +960,7 @@ def _extract_frontmatter(lines: list[str]) -> tuple[str, list[str], dict]:
     3. After the title block, scan a wider window for authors, emails, and
        affiliations, with generic keyword matching.
     """
-    metadata: dict = {"emails": [], "affiliations": []}
+    metadata: dict = {"emails": [], "affiliations": [], "author_profiles": []}
     title_lines: list[str] = []
     idx = 0
 
@@ -178,18 +1002,29 @@ def _extract_frontmatter(lines: list[str]) -> tuple[str, list[str], dict]:
     title = " ".join(title_lines).strip()
 
     # Step 3: scan a wider window for authors, emails, and affiliations.
-    authors: list[str] = []
-    for line in lines[idx:idx + 30]:
+    frontmatter_lines: list[str] = []
+    for line in lines[idx:idx + 40]:
         if _FRONTMATTER_END_RE.search(line):
             break
+        frontmatter_lines.append(line)
+
+    profiles = _extract_author_profiles(frontmatter_lines)
+    authors: list[str] = [profile["name"] for profile in profiles if profile.get("name")]
+    for profile in profiles:
+        if profile.get("email"):
+            metadata["emails"].append(profile["email"])
+        affiliation = profile.get("institution") or profile.get("department")
+        if affiliation:
+            metadata["affiliations"].append(affiliation)
+    if profiles:
+        metadata["author_profiles"] = profiles
+
+    for line in frontmatter_lines:
         if "@" in line:
             for email in re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", line):
                 metadata["emails"].append(email)
             continue
-        if any(token in line.lower() for token in [
-            "university", "department", "engineering", "science", "institute",
-            "college", "school", "laboratory", "research center", "lab,", "lab ",
-        ]):
+        if _looks_like_affiliation_line(line):
             metadata["affiliations"].append(line)
             continue
         if _looks_like_authors_line(line):
@@ -197,8 +1032,73 @@ def _extract_frontmatter(lines: list[str]) -> tuple[str, list[str], dict]:
             for token in re.split(r",|\band\b|\u2014|\u2013", line):
                 token = token.strip()
                 if token and len(token.split()) <= 5 and re.match(r"^[A-Z][A-Za-z .'\-]+$", token):
-                    authors.append(token)
+                    if token not in authors:
+                        authors.append(token)
+    metadata["emails"] = list(dict.fromkeys(metadata["emails"]))
+    metadata["affiliations"] = list(dict.fromkeys(metadata["affiliations"]))
     return title, authors, metadata
+
+
+def _extract_author_profiles(lines: list[str]) -> list[dict[str, str]]:
+    """Recover per-author credential blocks from PDF frontmatter lines.
+
+    Common IEEE PDFs emit each author as a compact vertical block:
+    name, department/field, institution, location, email. Keeping those fields
+    together prevents cities/countries from being mistaken for author names or
+    attached to the wrong person in ACM output.
+    """
+    profiles: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+
+    for line in lines:
+        s = " ".join(line.split()).strip()
+        if not s:
+            continue
+        if "@" in s:
+            if current is not None:
+                email = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", s)
+                if email:
+                    current["email"] = email.group(0)
+            continue
+        if _looks_like_authors_line(s):
+            if current and _profile_has_metadata(current):
+                profiles.append(current)
+            current = {"name": s}
+            continue
+        if current is None:
+            continue
+        if _looks_like_affiliation_line(s):
+            if _looks_like_institution_line(s):
+                current.setdefault("institution", s)
+            else:
+                current.setdefault("department", s)
+            continue
+        if _looks_like_location_line(s):
+            current.update(_parse_location_line(s))
+
+    if current and _profile_has_metadata(current):
+        profiles.append(current)
+
+    # Only trust this structured parse if it found real metadata for more than
+    # one author or if the single-author block has an email/institution.
+    if len(profiles) > 1:
+        return profiles
+    if len(profiles) == 1 and (profiles[0].get("email") or profiles[0].get("institution")):
+        return profiles
+    return []
+
+
+def _profile_has_metadata(profile: dict[str, str]) -> bool:
+    return any(profile.get(key) for key in ("email", "institution", "department", "city", "country"))
+
+
+def _looks_like_institution_line(line: str) -> bool:
+    lowered = line.strip().lower()
+    institution_tokens = {
+        "university", "institute", "college", "school", "laboratory",
+        "research", "center", "faculty", "campus", "academy",
+    }
+    return any(token in lowered for token in institution_tokens)
 
 
 def _is_title_banner_noise(line: str) -> bool:
@@ -225,21 +1125,98 @@ def _looks_like_authors_line(line: str) -> bool:
     s = line.strip()
     if not s or len(s) > 200:
         return False
+    if "@" in s or re.search(r"\d", s):
+        return False
+    if _looks_like_affiliation_line(s) or _looks_like_location_line(s):
+        return False
     # A single short capitalised name line.
-    if len(s.split()) <= 5 and re.match(r"^[A-Z][A-Za-z .'\-]+$", s):
+    words = [word for word in s.split() if word]
+    if 2 <= len(words) <= 5 and all(_looks_like_person_name_token(word) for word in words):
         return True
     # A comma-separated list of capitalised names.
     parts = [p.strip() for p in re.split(r",|\band\b", s) if p.strip()]
-    if len(parts) >= 2 and all(re.match(r"^[A-Z][A-Za-z .'\-]{1,40}$", p) for p in parts):
+    if len(parts) >= 2 and all(
+        not _looks_like_location_line(p)
+        and not _looks_like_affiliation_line(p)
+        and 2 <= len(p.split()) <= 5
+        and all(_looks_like_person_name_token(word) for word in p.split())
+        for p in parts
+    ):
         return True
     return False
 
 
+def _looks_like_person_name_token(token: str) -> bool:
+    stripped = token.strip().strip(",;:")
+    if not stripped:
+        return False
+    if re.fullmatch(r"[A-Z]\.", stripped):
+        return True
+    return bool(re.fullmatch(r"[A-Z][A-Za-z'\-]*", stripped))
+
+
+def _looks_like_affiliation_line(line: str) -> bool:
+    lowered = line.strip().lower()
+    return any(token in lowered for token in _AFFILIATION_LINE_HINTS)
+
+
+def _looks_like_location_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if _looks_like_comma_location(stripped):
+        return True
+    if stripped.lower() in {"usa", "us", "u.s.a.", "u.s.", "uk", "u.k.", "nc", "ny", "ca", "dc"}:
+        return True
+    words = [re.sub(r"[^A-Za-z]", "", word).lower() for word in stripped.split()]
+    words = [word for word in words if word]
+    if not words:
+        return False
+    if len(words) == 1:
+        return True
+    return all(word in _GEOGRAPHIC_TOKENS for word in words)
+
+
+def _looks_like_comma_location(line: str) -> bool:
+    if "," not in line or re.search(r"[@\d]", line):
+        return False
+    parts = [part.strip() for part in line.split(",") if part.strip()]
+    if not 2 <= len(parts) <= 4:
+        return False
+    if any(_looks_like_affiliation_line(part) for part in parts):
+        return False
+    trailing = re.sub(r"[^A-Za-z.]", "", parts[-1]).lower().replace(".", "")
+    if trailing not in {"usa", "us", "uk", "uae", "nc", "ny", "ca", "dc"} and trailing not in _GEOGRAPHIC_TOKENS:
+        return False
+    return all(1 <= len(part.split()) <= 3 for part in parts)
+
+
+def _parse_location_line(line: str) -> dict[str, str]:
+    stripped = " ".join(line.split()).strip()
+    if "," in stripped:
+        parts = [part.strip() for part in stripped.split(",") if part.strip()]
+        if len(parts) >= 3:
+            return {"city": parts[0], "state": parts[1], "country": parts[2]}
+        if len(parts) == 2:
+            second = parts[1]
+            normalized = re.sub(r"[^A-Za-z.]", "", second).lower().replace(".", "")
+            if normalized in {"usa", "us", "uk", "uae"}:
+                return {"city": parts[0], "country": second}
+            return {"city": parts[0], "state": second}
+    normalized = re.sub(r"[^A-Za-z.]", "", stripped).lower().replace(".", "")
+    if normalized in {"usa", "us", "uk", "uae"}:
+        return {"country": stripped}
+    if normalized in {"nc", "ny", "ca", "dc"}:
+        return {"state": stripped}
+    return {"city": stripped}
+
+
 def _extract_abstract(text: str) -> str:
+    intro_boundary = r"(?:^|\n)(?:I\.\s*INTRODUCTION|\d+(?:\.\d+)?\.?\s*INTRODUCTION|INTRODUCTION)\b"
     patterns = [
-        r"Abstract[\s—-]+(.*?)(?:Index Terms|Keywords|I\.\s*INTRODUCTION)",
-        r"Abstract\s*(.*?)(?:Index Terms|Keywords|I\.\s*INTRODUCTION)",
-        r"Abstract\s*(.*?)(?:I\.\s*INTRODUCTION)",
+        rf"Abstract[\s—-]+(.*?)(?:Index Terms|Keywords|{intro_boundary})",
+        rf"Abstract\s*(.*?)(?:Index Terms|Keywords|{intro_boundary})",
+        rf"Abstract\s*(.*?)(?:{intro_boundary})",
     ]
     for pattern in patterns:
         m = re.search(pattern, text, re.S | re.I)
@@ -249,9 +1226,10 @@ def _extract_abstract(text: str) -> str:
 
 
 def _extract_keywords(text: str) -> list[str]:
+    intro_boundary = r"(?:^|\n)(?:I\.\s*INTRODUCTION|\d+(?:\.\d+)?\.?\s*INTRODUCTION|INTRODUCTION)\b"
     patterns = [
-        r"Index Terms[\s—-]+(.*?)(?:I\.\s*INTRODUCTION)",
-        r"Keywords[\s—-]+(.*?)(?:I\.\s*INTRODUCTION)",
+        rf"Index Terms[\s—-]+(.*?)(?:{intro_boundary})",
+        rf"Keywords[\s—-]+(.*?)(?:{intro_boundary})",
     ]
     for pattern in patterns:
         m = re.search(pattern, text, re.S | re.I)
@@ -262,31 +1240,134 @@ def _extract_keywords(text: str) -> list[str]:
 
 
 def _extract_sections(text: str) -> list[Section]:
-    pattern = re.compile(r"(?:^|\n)([IVX]+\.\s+[A-Z][A-Z\s\-]+)(?:\n|$)")
-    matches = list(pattern.finditer(text))
+    raw_lines = text.splitlines()
+    heading_lines = _find_section_heading_lines(raw_lines)
     sections: list[Section] = []
-    for i, match in enumerate(matches):
-        title = _cleanup(match.group(1))
-        start = match.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        content = _cleanup(text[start:end])
-        content = _strip_section_noise(content)
-        if len(content) < 40:
+    for i, (line_index, heading_text) in enumerate(heading_lines):
+        next_index = heading_lines[i + 1][0] if i + 1 < len(heading_lines) else len(raw_lines)
+        content = _extract_section_content(raw_lines[line_index + 1:next_index])
+        content = _repair_split_drop_cap(content)
+        normalized_title = _normalize_heading(heading_text)
+        min_length = 8 if normalized_title.lower() in {"references", "bibliography", "works cited"} else 40
+        if len(content) < min_length:
             continue
-        sections.append(Section(title=_normalize_heading(title), content=content))
+        sections.append(Section(title=normalized_title, content=content))
 
     if not sections:
         return _fallback_sections(text)
     return sections
 
 
+_ROMAN_SECTION_RE = re.compile(r"^[IVX]+\.\s+[A-Z][A-Z \-]+$")
+_ARABIC_SECTION_RE = re.compile(r"^\d+(?:\.\d+)?\.?\s+[A-Z][A-Za-z][A-Za-z0-9'&/\-]*(?:\s+[A-Z][A-Za-z0-9'&/\-]*){0,6}$")
+_UNNUMBERED_SECTION_RE = re.compile(r"^(?:[A-Z][A-Za-z0-9'&/\-]*|[A-Z]{2,})(?:\s+(?:[A-Z][A-Za-z0-9'&/\-]*|[A-Z]{2,})){0,4}$")
+_UNNUMBERED_SECTION_BLOCKLIST = {
+    "abstract",
+    "index terms",
+    "keywords",
+    "actual points",
+    "estimated points",
+    "difference",
+    "performance measurement",
+}
+
+
+def _find_section_heading_lines(lines: list[str]) -> list[tuple[int, str]]:
+    headings: list[tuple[int, str]] = []
+    nonempty_seen = 0
+    for idx, raw in enumerate(lines):
+        line = raw.strip()
+        if not line:
+            continue
+        nonempty_seen += 1
+        if _ROMAN_SECTION_RE.match(line) or _ARABIC_SECTION_RE.match(line):
+            headings.append((idx, line))
+            continue
+        if _looks_like_unnumbered_section_heading(line, idx, lines, nonempty_seen):
+            headings.append((idx, line))
+    deduped: list[tuple[int, str]] = []
+    seen_indexes: set[int] = set()
+    for idx, title in headings:
+        if idx in seen_indexes:
+            continue
+        seen_indexes.add(idx)
+        deduped.append((idx, title))
+    return deduped
+
+
+def _looks_like_unnumbered_section_heading(line: str, idx: int, lines: list[str], nonempty_seen: int) -> bool:
+    normalized = " ".join(line.split())
+    lowered = normalized.lower()
+    if lowered in _UNNUMBERED_SECTION_BLOCKLIST:
+        return False
+    if not _UNNUMBERED_SECTION_RE.match(normalized):
+        return False
+    if len(normalized.split()) == 1 and len(normalized) <= 3 and normalized.isupper():
+        return False
+    if normalized.endswith((".", ",", ";", ":")):
+        return False
+    next_line = _next_nonempty_line(lines, idx)
+    if not next_line:
+        return False
+    if not (_looks_like_body_text_line(next_line) or _looks_like_reference_entry_lead(next_line) or _looks_like_subsection_line(next_line)):
+        return False
+    return True
+
+
+def _next_nonempty_line(lines: list[str], idx: int) -> str:
+    for candidate in lines[idx + 1:]:
+        stripped = candidate.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _looks_like_body_text_line(text: str) -> bool:
+    words = text.split()
+    if len(words) < 6:
+        return False
+    lowercase_words = sum(1 for word in words if any(ch.islower() for ch in word))
+    return lowercase_words >= max(3, len(words) // 3)
+
+
+def _looks_like_reference_entry_lead(text: str) -> bool:
+    return bool(
+        re.match(r"^\[\d+\]", text)
+        or re.match(r"^\d+[\.\)]\s+", text)
+        or re.match(r"^(?:[A-Z]\.\s*){1,3}[A-Z][A-Za-z'-]+", text)
+    )
+
+
+def _looks_like_subsection_line(text: str) -> bool:
+    return bool(re.match(r"^[A-Z]\.\s+[A-Z]", text))
+
+
 def _extract_reference_placeholders(text: str) -> list[Reference]:
-    seen = []
+    references: list[Reference] = []
+    seen: set[str] = set()
+    ref_block = re.search(r"(?:^|\n)(?:REFERENCES|BIBLIOGRAPHY|WORKS\s+CITED)\s*(.*)$", text, re.I | re.S)
+    if ref_block:
+        trailing = ref_block.group(1)
+        parts = re.split(r"(?=\[\d+\])", trailing)
+        for part in parts:
+            match = re.match(r"\[(\d+)\]\s*(.+)", part.strip(), re.S)
+            if not match:
+                continue
+            key = f"ref{match.group(1)}"
+            if key in seen:
+                continue
+            seen.add(key)
+            raw = _cleanup(match.group(2))
+            references.append(Reference(key=key, raw=raw or f"placeholder for {key}"))
+    if references:
+        return references
     for m in re.finditer(r"\[(\d+)\]", text):
         key = f"ref{m.group(1)}"
-        if key not in seen:
-            seen.append(key)
-    return [Reference(key=k, raw=f"placeholder for {k}") for k in seen]
+        if key in seen:
+            continue
+        seen.add(key)
+        references.append(Reference(key=key, raw=f"placeholder for {key}"))
+    return references
 
 
 def _strip_section_noise(content: str) -> str:
@@ -294,6 +1375,71 @@ def _strip_section_noise(content: str) -> str:
     content = re.sub(r"IEEE INFOCOM.*?Networks", " ", content, flags=re.I | re.S)
     content = re.sub(r"\b(?:Scan|Registration)\b\s+\d+(?:\s+\d+)*", " ", content)
     return _cleanup(content)
+
+
+def _extract_section_content(lines: list[str]) -> str:
+    block = _strip_section_noise_multiline("\n".join(lines))
+    paragraphs: list[str] = []
+    current: list[str] = []
+
+    def flush() -> None:
+        if not current:
+            return
+        paragraph = _cleanup(" ".join(current))
+        if paragraph:
+            paragraphs.append(paragraph)
+        current.clear()
+
+    for raw_line in block.splitlines():
+        line = raw_line.strip()
+        if not line:
+            flush()
+            continue
+        if _should_skip_section_line(line):
+            flush()
+            continue
+        if current and _starts_new_paragraph(current[-1], line):
+            flush()
+        current.append(line)
+
+    flush()
+    return "\n\n".join(paragraphs)
+
+
+def _strip_section_noise_multiline(content: str) -> str:
+    cleaned = content or ""
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = cleaned.replace("�", "-")
+    cleaned = cleaned.replace("\u2019", "'")
+    cleaned = re.sub(r"Authorized licensed use limited to:.*?Restrictions apply\.", " ", cleaned, flags=re.I | re.S)
+    cleaned = re.sub(r"IEEE INFOCOM.*?Networks", " ", cleaned, flags=re.I | re.S)
+    cleaned = re.sub(r"\b(?:Scan|Registration)\b\s+\d+(?:\s+\d+)*", " ", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _should_skip_section_line(line: str) -> bool:
+    compact = line.strip()
+    if not compact:
+        return True
+    if re.fullmatch(r"\d{1,3}", compact):
+        return True
+    if re.fullmatch(r"(?:19|20)\d{2}", compact):
+        return True
+    return False
+
+
+def _starts_new_paragraph(previous_line: str, line: str) -> bool:
+    if re.match(r"^(?:\d+\)|\(\d+\)|[A-Z]\.)\s+", line):
+        return True
+    if re.match(r"^\d+\.\d+$", previous_line) and line[:1].isupper():
+        return True
+    if re.match(r"^\d+\.\d+\s+", line):
+        return True
+    if previous_line.endswith((".", "!", "?")) and re.match(r"^(?:Fig\.|Figure|Table|TABLE)\s+\d+", line):
+        return True
+    return False
 
 
 def _fallback_sections(text: str) -> list[Section]:
@@ -306,8 +1452,13 @@ def _fallback_sections(text: str) -> list[Section]:
 
 def _normalize_heading(title: str) -> str:
     title = re.sub(r"^[IVX]+\.\s*", "", title).strip()
+    title = re.sub(r"^\d+(?:\.\d+)?\.?\s*", "", title).strip()
     words = [w.capitalize() if w.isupper() else w.capitalize() for w in title.split()]
     return " ".join(words)
+
+
+def _repair_split_drop_cap(text: str) -> str:
+    return re.sub(r"^([A-Z])\s+([A-Z]{2,}\b)", lambda m: m.group(1) + m.group(2), text.strip())
 
 
 def _cleanup(text: str) -> str:

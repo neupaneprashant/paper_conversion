@@ -1,0 +1,82 @@
+{
+  "job_id": "job-1776759960-d20220c7",
+  "direction": "ieee_to_acm",
+  "status": "failed",
+  "converted_source_path": "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\secure-demo\\converted",
+  "final_pdf_path": null,
+  "validation": {
+    "template_compliance": "warn",
+    "citation_compliance": "pass",
+    "compile_status": "failed",
+    "warnings": [
+      "Required sections not found (using body content as-is): Introduction"
+    ],
+    "errors": [
+      "Compile did not reach success threshold"
+    ]
+  },
+  "reports": {
+    "conversion_report": {
+      "mapped_fields": [
+        "title",
+        "authors",
+        "abstract",
+        "keywords",
+        "sections",
+        "references",
+        "acknowledgments"
+      ],
+      "changed_sections": [
+        "Introduction D",
+        "Guide To Paper",
+        "Motivation",
+        "Contribution",
+        "Related Works",
+        "The Proposed Scheme",
+        "Experiment",
+        "Conclusion",
+        "References"
+      ],
+      "unresolved_items": [],
+      "warnings": [],
+      "assumptions": [
+        "Converted IEEEkeywords to ACM keywords"
+      ],
+      "target_template_profile": "acmart-sigconf",
+      "source_format": "ieee",
+      "target_format": "acm",
+      "ingest_confidence": 1.0
+    },
+    "harmonization_report": {
+      "operations": [
+        "collapsed_excess_blank_lines"
+      ],
+      "warnings": [],
+      "llm_notes": []
+    },
+    "compile_report": {
+      "commands": [
+        "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex",
+        "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\bibtex.EXE main",
+        "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex",
+        "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\bibtex.EXE main",
+        "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex",
+        "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\bibtex.EXE main"
+      ],
+      "repairs": [
+        "no repair applied",
+        "no repair applied"
+      ],
+      "log_snippets": [
+        "Warning--empty publisher in ref12\nWarning--empty address in ref12\nWarning--page numbers missing in both pages and numpages fields in ref12\nName 1 in \"F. Monrose, M. K. Reiter, Q. Li, and S. Wetzel\" has a comma at the end for entry ref11\nwhile executing---line 3215 of file ACM-Reference-Format.bst\nName 1 in \"F. Monrose, M. K. Reiter, Q. Li, and S. Wetzel\" has a comma at the end for entry ref11\nwhile executing---line 3215 of file ACM-Reference-Format.bst\nWarning--empty publisher in ref11\nWarning--empty address in ref11\nWarning--page numbers missing in both pages and numpages fields in ref11\nWarning--no number and no volume in ref6\nWarning--page numbers missing in both pages and numpages fields in ref6\nName 1 in \"H. M. Therar, E. A. Mohammed, and A. J. Ali\" has a comma at the end for entry ref13\nwhile executing---line 3215 of file ACM-Reference-Format.bst\nName 1 in \"H. M. Therar, E. A. Mohammed, and A. J. Ali\" has a comma at the end for entry ref13\nwhile executing---line 3215 of file ACM-Reference-Format.bst\nWarning--empty publisher in ref13\nWarning--empty address in ref13\nWarning--page numbers missing in both pages and numpages fields in ref13\nWarning--empty publisher in ref14\nWarning--empty address in ref14\nWarning--page numbers missing in both pages and numpages fields in ref14\n(There were 56 error messages)\n\nbibtex: major issue: So far, you have not checked for MiKTeX updates.",
+        "Warning--empty publisher in ref12\nWarning--empty address in ref12\nWarning--page numbers missing in both pages and numpages fields in ref12\nName 1 in \"F. Monrose, M. K. Reiter, Q. Li, and S. Wetzel\" has a comma at the end for entry ref11\nwhile executing---line 3215 of file ACM-Reference-Format.bst\nName 1 in \"F. Monrose, M. K. Reiter, Q. Li, and S. Wetzel\" has a comma at the end for entry ref11\nwhile executing---line 3215 of file ACM-Reference-Format.bst\nWarning--empty publisher in ref11\nWarning--empty address in ref11\nWarning--page numbers missing in both pages and numpages fields in ref11\nWarning--no number and no volume in ref6\nWarning--page numbers missing in both pages and numpages fields in ref6\nName 1 in \"H. M. Therar, E. A. Mohammed, and A. J. Ali\" has a comma at the end for entry ref13\nwhile executing---line 3215 of file ACM-Reference-Format.bst\nName 1 in \"H. M. Therar, E. A. Mohammed, and A. J. Ali\" has a comma at the end for entry ref13\nwhile executing---line 3215 of file ACM-Reference-Format.bst\nWarning--empty publisher in ref13\nWarning--empty address in ref13\nWarning--page numbers missing in both pages and numpages fields in ref13\nWarning--empty publisher in ref14\nWarning--empty address in ref14\nWarning--page numbers missing in both pages and numpages fields in ref14\n(There were 56 error messages)\n\nbibtex: major issue: So far, you have not checked for MiKTeX updates.",
+        "Warning--empty publisher in ref12\nWarning--empty address in ref12\nWarning--page numbers missing in both pages and numpages fields in ref12\nName 1 in \"F. Monrose, M. K. Reiter, Q. Li, and S. Wetzel\" has a comma at the end for entry ref11\nwhile executing---line 3215 of file ACM-Reference-Format.bst\nName 1 in \"F. Monrose, M. K. Reiter, Q. Li, and S. Wetzel\" has a comma at the end for entry ref11\nwhile executing---line 3215 of file ACM-Reference-Format.bst\nWarning--empty publisher in ref11\nWarning--empty address in ref11\nWarning--page numbers missing in both pages and numpages fields in ref11\nWarning--no number and no volume in ref6\nWarning--page numbers missing in both pages and numpages fields in ref6\nName 1 in \"H. M. Therar, E. A. Mohammed, and A. J. Ali\" has a comma at the end for entry ref13\nwhile executing---line 3215 of file ACM-Reference-Format.bst\nName 1 in \"H. M. Therar, E. A. Mohammed, and A. J. Ali\" has a comma at the end for entry ref13\nwhile executing---line 3215 of file ACM-Reference-Format.bst\nWarning--empty publisher in ref13\nWarning--empty address in ref13\nWarning--page numbers missing in both pages and numpages fields in ref13\nWarning--empty publisher in ref14\nWarning--empty address in ref14\nWarning--page numbers missing in both pages and numpages fields in ref14\n(There were 56 error messages)\n\nbibtex: major issue: So far, you have not checked for MiKTeX updates."
+      ],
+      "suggested_fixes": [
+        "Inspect missing packages in main.log",
+        "Confirm bibliography file exists and matches \\bibliography{references}",
+        "Review unresolved LaTeX syntax around reported line numbers"
+      ]
+    }
+  }
+}

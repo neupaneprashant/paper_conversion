@@ -1,0 +1,61 @@
+{
+  "job_id": "job-1776759944-469f26d0",
+  "direction": "ieee_to_acm",
+  "status": "success",
+  "converted_source_path": "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\converted",
+  "final_pdf_path": "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\final\\main.pdf",
+  "validation": {
+    "template_compliance": "pass",
+    "citation_compliance": "pass",
+    "compile_status": "success",
+    "warnings": [
+      "Expected sections missing: Conclusion"
+    ],
+    "errors": []
+  },
+  "reports": {
+    "conversion_report": {
+      "mapped_fields": [
+        "title",
+        "authors",
+        "abstract",
+        "keywords",
+        "sections",
+        "references",
+        "acknowledgments"
+      ],
+      "changed_sections": [
+        "Introduction"
+      ],
+      "unresolved_items": [
+        "No ACM author frontmatter (affiliations/emails) inferred"
+      ],
+      "warnings": [],
+      "assumptions": [
+        "Converted IEEEkeywords to ACM keywords"
+      ],
+      "target_template_profile": "acmart-sigconf",
+      "source_format": "ieee",
+      "target_format": "acm",
+      "ingest_confidence": null
+    },
+    "harmonization_report": {
+      "operations": [
+        "light_normalization_pass"
+      ],
+      "warnings": [],
+      "llm_notes": []
+    },
+    "compile_report": {
+      "commands": [
+        "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex",
+        "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\bibtex.EXE main",
+        "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex",
+        "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex"
+      ],
+      "repairs": [],
+      "log_snippets": [],
+      "suggested_fixes": []
+    }
+  }
+}

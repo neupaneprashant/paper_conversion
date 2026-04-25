@@ -1,0 +1,123 @@
+{
+  "started_at": "2026-04-21T08:25:43.999246+00:00",
+  "finished_at": "2026-04-21T08:25:49.703502+00:00",
+  "input_path": "C:\\Users\\Prash\\.openclaw\\workspace\\samples\\ieee_sample",
+  "workdir": "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke",
+  "direction": "ieee_to_acm",
+  "inventory": [
+    {
+      "path": "C:\\Users\\Prash\\.openclaw\\workspace\\samples\\ieee_sample\\main.tex",
+      "relative_path": "main.tex",
+      "size_bytes": 437,
+      "suffix": ".tex"
+    },
+    {
+      "path": "C:\\Users\\Prash\\.openclaw\\workspace\\samples\\ieee_sample\\references.bib",
+      "relative_path": "references.bib",
+      "size_bytes": 44,
+      "suffix": ".bib"
+    }
+  ],
+  "cpr_summary": null,
+  "result": {
+    "job_id": "job-1776759944-469f26d0",
+    "direction": "ieee_to_acm",
+    "status": "success",
+    "converted_source_path": "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\converted",
+    "final_pdf_path": "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\final\\main.pdf",
+    "validation": {
+      "template_compliance": "pass",
+      "citation_compliance": "pass",
+      "compile_status": "success",
+      "warnings": [
+        "Expected sections missing: Conclusion"
+      ],
+      "errors": []
+    },
+    "reports": {
+      "conversion_report": {
+        "mapped_fields": [
+          "title",
+          "authors",
+          "abstract",
+          "keywords",
+          "sections",
+          "references",
+          "acknowledgments"
+        ],
+        "changed_sections": [
+          "Introduction"
+        ],
+        "unresolved_items": [
+          "No ACM author frontmatter (affiliations/emails) inferred"
+        ],
+        "warnings": [],
+        "assumptions": [
+          "Converted IEEEkeywords to ACM keywords"
+        ],
+        "target_template_profile": "acmart-sigconf",
+        "source_format": "ieee",
+        "target_format": "acm",
+        "ingest_confidence": null
+      },
+      "harmonization_report": {
+        "operations": [
+          "light_normalization_pass"
+        ],
+        "warnings": [],
+        "llm_notes": []
+      },
+      "compile_report": {
+        "commands": [
+          "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex",
+          "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\bibtex.EXE main",
+          "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex",
+          "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex"
+        ],
+        "repairs": [],
+        "log_snippets": [],
+        "suggested_fixes": []
+      }
+    }
+  },
+  "events": [
+    {
+      "name": "inventory",
+      "status": "done",
+      "detail": "Collected 2 input file(s).",
+      "outputs": []
+    },
+    {
+      "name": "convert_ieee_to_acm",
+      "status": "success",
+      "detail": "Conversion finished with status 'success'.",
+      "outputs": [
+        "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\job_output.json",
+        "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\final\\main.tex",
+        "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\final\\main.pdf",
+        "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\converted\\main.tex",
+        "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\converted"
+      ]
+    }
+  ],
+  "manifest": [
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\converted\\main.tex",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\converted\\references.bib",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\final\\main.aux",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\final\\main.bbl",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\final\\main.blg",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\final\\main.log",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\final\\main.out",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\final\\main.pdf",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\final\\main.tex",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\final\\references.bib",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\job_output.json",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\logs\\trace.json",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\workflow.json",
+    "C:\\Users\\Prash\\.openclaw\\workspace\\IEEEtoACM\\runs\\smoke\\workflow.md"
+  ],
+  "notes": [
+    "This workflow log is an external audit trail, not hidden chain-of-thought.",
+    "The conversion engine is the repo's existing paper_conversion_system pipeline."
+  ]
+}

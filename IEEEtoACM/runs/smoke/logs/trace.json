@@ -1,0 +1,31 @@
+[
+  {
+    "step": "comp_input",
+    "ts": 1776759944.0072494,
+    "input_fingerprint": "a3001aa7b8420706c45cdcb7b965fc6786a5194ef814c924f5397cff3d4ba710",
+    "mapping_operations": [
+      "context_harmonization",
+      "structural_validation",
+      "compile_orchestration"
+    ],
+    "warnings": [],
+    "errors": [],
+    "compile_command_sequence": []
+  },
+  {
+    "step": "comp_compile",
+    "ts": 1776759949.6974902,
+    "input_fingerprint": "151786524a048f372deff46428ac304baa7c505e0037c40e4bf5ba2bd37187f9",
+    "mapping_operations": [],
+    "warnings": [
+      "Expected sections missing: Conclusion"
+    ],
+    "errors": [],
+    "compile_command_sequence": [
+      "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex",
+      "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\bibtex.EXE main",
+      "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex",
+      "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex"
+    ]
+  }
+]

@@ -16,6 +16,8 @@
     </header>
 
     <main class="container">
+      <section id="engine-status" class="status-banner" hidden></section>
+
       <section class="card upload-card">
         <div class="upload-icon">📄</div>
         <h2>PDF to LaTeX to ACM/IEEE Conversion</h2>
@@ -150,11 +152,17 @@
         <div style="padding:8px;margin-bottom:12px;background:rgba(122,168,255,0.1);border-radius:8px;border-left:4px solid #7aa8ff;color:var(--text);font-size:0.9rem;">
           📂 Select a PDF file or LaTeX project folder • Double-click to select PDF or navigate folder
         </div>
+        <div class="picker-shortcuts" id="picker-shortcuts"></div>
+        <div class="picker-toolbar">
+          <button type="button" id="browse-up" class="picker-up-btn">Up</button>
+          <div class="picker-location" id="picker-location"></div>
+        </div>
         <div class="breadcrumb" id="breadcrumb"></div>
         <div class="file-list" id="file-list"></div>
       </div>
       <div class="modal-footer">
-        <button type="button" id="select-current" class="btn-primary">Select Current Path</button>
+        <button type="button" id="select-item" class="btn-secondary">Use Selected Item</button>
+        <button type="button" id="select-current" class="btn-primary">Use Current Folder</button>
         <button type="button" id="cancel-picker" class="btn-secondary">Cancel</button>
       </div>
     </div>

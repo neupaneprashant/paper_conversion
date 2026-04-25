@@ -23,6 +23,14 @@ def read_job_meta(job_dir: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def merge_job_meta(job_dir: Path, updates: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = read_job_meta(job_dir)
+    if updates:
+        data.update(updates)
+    write_job_meta(job_dir, data)
+    return data
+
+
 def copy_input(src: Path, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     if src.is_dir():

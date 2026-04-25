@@ -123,17 +123,25 @@ def _extract_frontmatter_from_sections(cpr: CanonicalPaperRepresentation) -> Can
 def _separate_references(cpr: CanonicalPaperRepresentation) -> CanonicalPaperRepresentation:
     updated_sections: list[Section] = []
     extracted_refs: list[Reference] = []
-    for section in cpr.sections:
-        if section.title.lower() == "conclusion":
-            match = re.search(r"(.*?)(?:REFERENCES\s+)(.*)$", section.content, flags=re.I | re.S)
-            if match:
-                updated_sections.append(Section(title=section.title, content=match.group(1).strip()))
-                refs_text = match.group(2).strip()
-                updated_sections.append(Section(title="References", content=refs_text))
-                extracted_refs.extend(_parse_reference_entries(refs_text))
-                continue
-        if section.title.lower() == "references":
-            extracted_refs.extend(_parse_reference_entries(section.content))
+    for index, section in enumerate(cpr.sections):
+        title_lower = section.title.strip().lower()
+        if title_lower in _REFERENCE_SECTION_TITLES:
+            refs_text = _strip_reference_tail_noise(section.content)
+            extracted_refs.extend(_parse_reference_entries(refs_text))
+            updated_sections.append(Section(title="References", content=refs_text))
+            continue
+
+        body_text, refs_text = _split_embedded_reference_block(
+            section.content,
+            prefer_split=(title_lower in {"body", "conclusion"} or index == len(cpr.sections) - 1),
+        )
+        if refs_text:
+            if body_text:
+                updated_sections.append(Section(title=section.title, content=body_text))
+            updated_sections.append(Section(title="References", content=refs_text))
+            extracted_refs.extend(_parse_reference_entries(refs_text))
+            continue
+
         updated_sections.append(section)
     cpr.sections = updated_sections
     if extracted_refs:
@@ -144,10 +152,49 @@ def _separate_references(cpr: CanonicalPaperRepresentation) -> CanonicalPaperRep
     return cpr
 
 
+_REFERENCE_SECTION_TITLES = {"references", "bibliography", "works cited"}
+_REFERENCE_MARKER_RE = re.compile(r"\b(?:REFERENCES|References|BIBLIOGRAPHY|Bibliography|WORKS\s+CITED|Works\s+Cited)\b")
+
+
+def _split_embedded_reference_block(content: str, prefer_split: bool = False) -> tuple[str, str]:
+    match = _REFERENCE_MARKER_RE.search(content or "")
+    if not match:
+        return content, ""
+    tail = _strip_reference_tail_noise((content or "")[match.end():].strip())
+    if not _looks_like_reference_block(tail):
+        return content, ""
+    body = (content or "")[:match.start()].strip()
+    if not prefer_split and len(body.split()) < 25:
+        return content, ""
+    return body, tail
+
+
+def _looks_like_reference_block(text: str) -> bool:
+    if not text or len(text) < 20:
+        return False
+    parsed = _parse_reference_entries(text)
+    if len(parsed) >= 2:
+        return True
+    if len(parsed) == 1:
+        raw = parsed[0].raw
+        return bool(re.search(r"\b(19|20)\d{2}\b", raw) and len(raw.split()) >= 4)
+    return False
+
+
+def _strip_reference_tail_noise(text: str) -> str:
+    cleaned = text or ""
+    cleaned = re.sub(r"LIST OF FIGURES.*", "", cleaned, flags=re.I | re.S)
+    cleaned = re.sub(r"LIST OF TABLES.*", "", cleaned, flags=re.I | re.S)
+    cleaned = re.sub(r"APPENDI(?:X|CES).*", "", cleaned, flags=re.I | re.S)
+    return cleaned.strip()
+
+
 def _extract_figures_and_tables(cpr: CanonicalPaperRepresentation) -> CanonicalPaperRepresentation:
     figures: list[Figure] = []
     tables: list[Table] = []
     captions: list[str] = []
+    figure_section_map: dict[str, str] = {}
+    table_section_map: dict[str, str] = {}
     for section in cpr.sections:
         for m in re.finditer(r"(?:Fig\.|Figure)\s*(\d+)\.?\s*([^\n]{0,100})", section.content, flags=re.I):
             caption = (m.group(2) or "").strip(" .:-")
@@ -164,7 +211,9 @@ def _extract_figures_and_tables(cpr: CanonicalPaperRepresentation) -> CanonicalP
             if not caption[0].isupper():
                 continue
             captions.append(m.group(0).strip())
-            figures.append(Figure(label=f"fig:{m.group(1)}", caption=caption, path=""))
+            label = f"fig:{m.group(1)}"
+            figures.append(Figure(label=label, caption=caption, path=""))
+            figure_section_map[label] = section.title
         for m in re.finditer(r"TABLE\s+([IVXLC0-9]+)\s+([^\n]{0,120})", section.content, flags=re.I):
             caption = (m.group(2) or "").strip(" .:-")
             if not caption or len(caption) < 12:
@@ -172,11 +221,17 @@ def _extract_figures_and_tables(cpr: CanonicalPaperRepresentation) -> CanonicalP
             if len(caption.split()) < 3:
                 continue
             captions.append(m.group(0).strip())
-            tables.append(Table(label=f"tab:{m.group(1).lower()}", caption=caption, latex="% reconstructed table unavailable"))
+            label = f"tab:{m.group(1).lower()}"
+            tables.append(Table(label=label, caption=caption, latex="% reconstructed table unavailable"))
+            table_section_map[label] = section.title
     cpr.figures = figures[:4]
     cpr.tables = tables[:3]
     if captions:
         cpr.metadata["detected_captions"] = captions[:50]
+    if figure_section_map:
+        cpr.metadata["figure_section_map"] = figure_section_map
+    if table_section_map:
+        cpr.metadata["table_section_map"] = table_section_map
     return cpr
 
 
@@ -197,13 +252,39 @@ def _add_subsection_markers(cpr: CanonicalPaperRepresentation) -> CanonicalPaper
     updated: list[Section] = []
     for section in cpr.sections:
         content = re.sub(
-            r"(?<!\\subsection\{)(?:^|\s)([A-Z])\.\s+([A-Z][A-Za-z][A-Za-z'\- ]{2,50})(?=\s)",
-            lambda m: f" \\subsection{{{m.group(2).strip()}}} ",
+            r"(?<!\\subsection\{)(^|\s)([A-Z])\.\s+([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,7})",
+            lambda m: _replace_subsection_candidate(m.group(1), m.group(3)),
             section.content,
         )
         updated.append(Section(title=section.title, content=content))
     cpr.sections = updated
     return cpr
+
+
+_SUBSECTION_BODY_STARTS = {"In", "The", "This", "These", "Where", "When", "Then", "After", "Before", "If", "For", "To"}
+
+
+def _replace_subsection_candidate(prefix: str, candidate: str) -> str:
+    title, remainder = _split_subsection_candidate(candidate)
+    if not title:
+        return f"{prefix}{candidate}"
+    suffix = f" {remainder}" if remainder else ""
+    return f"{prefix}\\subsection{{{title}}}{suffix}"
+
+
+def _split_subsection_candidate(candidate: str) -> tuple[str, str]:
+    words = [word.strip() for word in candidate.split() if word.strip()]
+    kept: list[str] = []
+    for index, word in enumerate(words):
+        bare = word.strip(",.;:")
+        if kept and (bare in _SUBSECTION_BODY_STARTS or re.fullmatch(r"\d+\)", bare)):
+            return " ".join(kept).strip(), " ".join(words[index:]).strip()
+        kept.append(bare)
+        if len(kept) >= 4 and index + 1 < len(words):
+            return " ".join(kept).strip(), " ".join(words[index + 1:]).strip()
+    if len(kept) < 2:
+        return "", candidate.strip()
+    return " ".join(kept).strip(), ""
 
 
 def _compute_ingest_confidence(cpr: CanonicalPaperRepresentation) -> CanonicalPaperRepresentation:
@@ -229,6 +310,8 @@ def _compute_ingest_confidence(cpr: CanonicalPaperRepresentation) -> CanonicalPa
 def _parse_reference_entries(text: str) -> list[Reference]:
     refs: list[Reference] = []
     matches = list(re.finditer(r"\[(\d+)\]\s*(.*?)(?=\s*\[\d+\]|$)", text, flags=re.S))
+    if not matches:
+        matches = list(re.finditer(r"(?:^|\s)(\d+)[\.\)]\s*(.*?)(?=(?:\s+\d+[\.\)])|$)", text, flags=re.S))
     for m in matches:
         idx = m.group(1)
         raw = re.sub(r"\s+", " ", m.group(2)).strip()

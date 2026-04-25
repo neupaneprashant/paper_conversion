@@ -63,6 +63,7 @@ def compile_project(project_dir: Path, max_repairs: int = 2) -> tuple[str, Compi
     return (
         "failed",
         CompileArtifacts(
+            pdf_path=str(project_dir / "main.pdf") if (project_dir / "main.pdf").exists() else None,
             log_path=str(project_dir / "main.log") if (project_dir / "main.log").exists() else None,
             aux_path=str(project_dir / "main.aux") if (project_dir / "main.aux").exists() else None,
             bbl_path=str(project_dir / "main.bbl") if (project_dir / "main.bbl").exists() else None,
@@ -84,6 +85,7 @@ _BIBTEX_SOFT_FAILURES = (
     "I found no \\citation commands",
     "I found no \\bibdata command",
     "I found no \\bibstyle command",
+    "So far, you have not checked for MiKTeX updates",
 )
 
 # pdflatex returncode can be non-zero even when the PDF was produced. This
@@ -112,19 +114,21 @@ def _pdflatex_succeeded(project_dir: Path, proc_output: str) -> bool:
 def _run_compile_cycle(project_dir: Path, main: Path, pdflatex: str, bibtex: str | None) -> tuple[str, str, list[str]]:
     cmds: list[str] = []
     snippet = ""
+    main_text = main.read_text(encoding="utf-8", errors="ignore") if main.exists() else ""
+    needs_bibtex = "\\bibliography{" in main_text or "\\bibliographystyle{" in main_text
 
     first = [pdflatex, "-interaction=nonstopmode", main.name]
     cmds.append(" ".join(first))
-    proc1 = subprocess.run(first, cwd=project_dir, capture_output=True, text=True)
+    proc1 = subprocess.run(first, cwd=project_dir, capture_output=True, text=True, errors="replace")
     proc1_output = (proc1.stdout or "") + "\n" + (proc1.stderr or "")
     if proc1.returncode != 0 and not _pdflatex_succeeded(project_dir, proc1_output):
         snippet = _tail(proc1_output)
         return "failed", snippet, cmds
 
-    if bibtex and (project_dir / "main.aux").exists():
+    if needs_bibtex and bibtex and (project_dir / "main.aux").exists():
         bib = [bibtex, "main"]
         cmds.append(" ".join(bib))
-        proc_bib = subprocess.run(bib, cwd=project_dir, capture_output=True, text=True)
+        proc_bib = subprocess.run(bib, cwd=project_dir, capture_output=True, text=True, errors="replace")
         bib_output = (proc_bib.stdout or "") + "\n" + (proc_bib.stderr or "")
         bibtex_is_soft = any(marker in bib_output for marker in _BIBTEX_SOFT_FAILURES)
         if proc_bib.returncode != 0 and not bibtex_is_soft:
@@ -135,7 +139,7 @@ def _run_compile_cycle(project_dir: Path, main: Path, pdflatex: str, bibtex: str
     third = [pdflatex, "-interaction=nonstopmode", main.name]
     for cmd in (second, third):
         cmds.append(" ".join(cmd))
-        proc = subprocess.run(cmd, cwd=project_dir, capture_output=True, text=True)
+        proc = subprocess.run(cmd, cwd=project_dir, capture_output=True, text=True, errors="replace")
         proc_output = (proc.stdout or "") + "\n" + (proc.stderr or "")
         if proc.returncode != 0 and not _pdflatex_succeeded(project_dir, proc_output):
             snippet = _tail(proc_output)
@@ -165,7 +169,7 @@ def _attempt_repair(project_dir: Path, attempt: int) -> str:
         repairs.append(f"removed {end_doc_count - 1} duplicate \\end{{document}}")
 
     # Remove duplicate \bibliography and \bibliographystyle lines (keep last occurrence).
-    for cmd in ("\\bibliographystyle", "\\bibliography{references}"):
+    for cmd in ("\\bibliographystyle", "\\bibliography{references}", "\\begin{thebibliography}"):
         occurrences = text.count(cmd)
         if occurrences > 1:
             # Keep only the final occurrence by blanking earlier ones.
@@ -183,7 +187,7 @@ def _attempt_repair(project_dir: Path, attempt: int) -> str:
         text = text.replace("\\begin{document}", "\\usepackage{graphicx}\n\\begin{document}", 1)
         repairs.append("inserted missing graphicx import")
 
-    if attempt >= 1 and "\\bibliography{references}" not in text:
+    if attempt >= 1 and "\\bibliography{references}" not in text and "\\begin{thebibliography}" not in text:
         text = text.replace("\\end{document}", "\\bibliography{references}\n\\end{document}", 1)
         repairs.append("inserted missing \\bibliography command")
 

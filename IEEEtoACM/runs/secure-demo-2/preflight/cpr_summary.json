@@ -1,0 +1,48 @@
+{
+  "title": "Secure Digital Signature Validated by Ambient",
+  "authors": [
+    "User's Wi-Fi-enabled devices",
+    "Ali Abdullah S. AlQahtani",
+    "Computer Systems Technology",
+    "Greensboro",
+    "North Carolina",
+    "USA",
+    "Hosam Alamleh",
+    "Wilmington",
+    "NC",
+    "Zakaria El-Awadi",
+    "Ruston",
+    "Louisiana",
+    "USA"
+  ],
+  "abstract_present": true,
+  "keywords": [
+    "digital signature",
+    "validation",
+    "email spoo\ufb01ng",
+    "public-key",
+    "private-key",
+    "Wi-Fi",
+    "RSSI."
+  ],
+  "section_titles": [
+    "Introduction D",
+    "Guide To Paper",
+    "Motivation",
+    "Contribution",
+    "Related Works",
+    "The Proposed Scheme",
+    "Experiment",
+    "Conclusion",
+    "References"
+  ],
+  "section_count": 9,
+  "figure_count": 2,
+  "table_count": 4,
+  "equation_artifact_count": 6,
+  "reference_count": 14,
+  "ingest_confidence": 1.0,
+  "warnings": [
+    "Recovered 1 embedded image asset(s) but only detected 0 caption(s); added generic figure entries for extras."
+  ]
+}

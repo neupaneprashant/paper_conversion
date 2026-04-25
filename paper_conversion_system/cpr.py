@@ -8,7 +8,7 @@ from .models import CanonicalPaperRepresentation, Section, Reference
 
 def parse_project_to_cpr(input_path: Path, source_format: str) -> CanonicalPaperRepresentation:
     main_tex = _detect_main_tex(input_path)
-    text = main_tex.read_text(encoding="utf-8")
+    text = _read_latex_with_includes(main_tex)
 
     title = _match_one(text, r"\\title\{(.+?)\}")
     abstract = _extract_abstract(text)
@@ -21,6 +21,7 @@ def parse_project_to_cpr(input_path: Path, source_format: str) -> CanonicalPaper
     metadata = {
         "source_format": source_format,
         "main_tex": str(main_tex),
+        "source_root": str(main_tex.parent),
         "acknowledgments": _extract_acknowledgments(text),
         "ccs_concepts": _extract_ccs_concepts(text),
         "ccsxml": _extract_ccsxml(text),
@@ -80,6 +81,34 @@ def _detect_main_tex(input_path: Path) -> Path:
 def _match_one(text: str, pattern: str) -> str:
     m = re.search(pattern, text, re.S)
     return m.group(1).strip() if m else ""
+
+
+_INCLUDE_RE = re.compile(r"\\(?:input|include)\{([^}]+)\}")
+
+
+def _read_latex_with_includes(tex_path: Path, seen: set[Path] | None = None) -> str:
+    """Read a LaTeX file and inline \\input/\\include children recursively."""
+    resolved = tex_path.resolve()
+    seen = seen or set()
+    if resolved in seen:
+        return ""
+    seen.add(resolved)
+    text = tex_path.read_text(encoding="utf-8", errors="ignore")
+
+    def replace_include(match: re.Match[str]) -> str:
+        raw_target = match.group(1).strip()
+        if not raw_target:
+            return ""
+        candidate = (tex_path.parent / raw_target)
+        if candidate.suffix.lower() != ".tex":
+            candidate_with_ext = candidate.with_suffix(".tex")
+            if candidate_with_ext.exists():
+                candidate = candidate_with_ext
+        if candidate.exists() and candidate.is_file():
+            return _read_latex_with_includes(candidate, seen)
+        return match.group(0)
+
+    return _INCLUDE_RE.sub(replace_include, text)
 
 
 def _extract_abstract(text: str) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+from typing import Callable
 
 from .cpr import parse_project_to_cpr
 from .models import CanonicalPaperRepresentation, ConversionReport
@@ -29,6 +30,7 @@ class _ConversionAgent:
         self,
         source: Path | CanonicalPaperRepresentation,
         output_dir: Path,
+        stage_callback: Callable[[str], None] | None = None,
     ) -> tuple[Path, ConversionReport, CanonicalPaperRepresentation]:
         """Run the end-to-end conversion flow for one agent direction.
 
@@ -51,7 +53,11 @@ class _ConversionAgent:
             cpr = parse_project_to_cpr(source, self.source_format)
 
         # Normalize before rendering so target-specific cleanup is shared.
+        if stage_callback is not None:
+            stage_callback("normalize")
         cpr, norm = normalize_cpr_for_target(cpr, self.target_format)
+        if stage_callback is not None:
+            stage_callback("render")
         main_path = render_cpr_to_target(cpr, self.target_format, output_dir)
         # Preserve side assets such as figures and bibliography files when present.
         _copy_assets_if_any(source, output_dir)
@@ -109,13 +115,26 @@ class Friday(_ConversionAgent):
 
 
 def _copy_assets_if_any(source: Path | CanonicalPaperRepresentation, output_dir: Path) -> None:
-    """Copy common side assets from a source project into the converted project.
+    """Copy source-project support files into the converted project.
 
-    This is intentionally conservative: it only copies known paper assets such as
-    images, PDF figures, EPS files, and bibliography files.
+    We preserve relative paths for nested figure folders, style files, class
+    files, bibliography databases, and other project artifacts so the rendered
+    target can still resolve ``\\includegraphics`` and template dependencies.
+    ``main.tex`` is always left alone so we don't overwrite the generated output.
     """
-    if not isinstance(source, Path) or not source.exists() or not source.is_dir():
+    if not isinstance(source, Path) or not source.exists():
         return
-    for child in source.iterdir():
-        if child.is_file() and child.suffix.lower() in {".png", ".jpg", ".jpeg", ".pdf", ".eps", ".bib"}:
-            shutil.copy2(child, output_dir / child.name)
+    source_root = source if source.is_dir() else source.parent
+    for child in source_root.rglob("*"):
+        if not child.is_file():
+            continue
+        if any(part.startswith(".") for part in child.relative_to(source_root).parts):
+            continue
+        if child.suffix.lower() in {".aux", ".bbl", ".blg", ".fdb_latexmk", ".fls", ".log", ".out", ".synctex.gz", ".toc"}:
+            continue
+        rel = child.relative_to(source_root)
+        if rel == Path("main.tex"):
+            continue
+        dest = output_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(child, dest)

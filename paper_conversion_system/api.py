@@ -1,111 +1,389 @@
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
 from pathlib import Path
+import re
+import signal
+import subprocess
+import string
+import sys
+import threading
+import time
 from urllib.parse import parse_qs, urlparse
 import cgi
 import json
 import mimetypes
-import threading
 import traceback
 
 from .models import new_job_id
-from .job_store import ensure_job_dirs, write_job_meta, read_job_meta, copy_input, now_ts
-from .orchestrator import route_and_run
-from .packaging import create_job_bundle
+from .job_store import copy_input, ensure_job_dirs, merge_job_meta, now_ts, read_job_meta, write_job_meta
 
 
 ROOT = Path(__file__).resolve().parent.parent
 JOBS_ROOT = ROOT / "jobs"
 UI_ROOT = ROOT / "ui"
+BROWSE_HOME = Path.home()
+DEFAULT_JOB_TIMEOUT_SECONDS = int(os.environ.get("PAPER_CONVERSION_JOB_TIMEOUT_SECONDS", "180"))
+ACTIVE_JOB_STATUSES = {"queued", "running"}
+TERMINAL_JOB_STATUSES = {"success", "failed"}
+
+
+def _default_browse_path() -> Path:
+    for candidate in (BROWSE_HOME / "Desktop", BROWSE_HOME / "Downloads", BROWSE_HOME):
+        if candidate.exists() and candidate.is_dir():
+            return candidate.resolve()
+    return ROOT.resolve()
+
+
+def _iter_drive_roots() -> list[Path]:
+    if os.name != "nt":
+        return [Path("/")]
+    drives: list[Path] = []
+    for letter in string.ascii_uppercase:
+        drive = Path(f"{letter}:\\")
+        try:
+            if drive.exists():
+                drives.append(drive)
+        except OSError:
+            continue
+    return drives
+
+
+def _browse_shortcuts() -> list[dict]:
+    shortcuts: list[dict] = []
+    seen: set[str] = set()
+
+    def add_shortcut(label: str, path: Path) -> None:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return
+        if not resolved.exists() or not resolved.is_dir():
+            return
+        key = str(resolved)
+        if key in seen:
+            return
+        seen.add(key)
+        shortcuts.append({"label": label, "path": key})
+
+    add_shortcut("Home", BROWSE_HOME)
+    add_shortcut("Desktop", BROWSE_HOME / "Desktop")
+    add_shortcut("Downloads", BROWSE_HOME / "Downloads")
+    add_shortcut("Documents", BROWSE_HOME / "Documents")
+    add_shortcut("Workspace", ROOT)
+
+    for drive in _iter_drive_roots():
+        label = drive.drive or str(drive)
+        add_shortcut(label, drive)
+
+    return shortcuts
+
+
+def _resolve_browse_target(raw_path: str) -> Path:
+    raw = (raw_path or "").strip().strip('"').strip("'")
+    if not raw:
+        return _default_browse_path()
+    if re.fullmatch(r"[A-Za-z]:", raw):
+        raw = raw + "\\"
+
+    candidate = Path(raw).expanduser()
+    if candidate.is_absolute():
+        target = candidate
+    else:
+        target = ROOT / candidate
+
+    target = target.resolve()
+    if target.exists() and target.is_file():
+        target = target.parent
+    return target
+
+
+def _browse_items(target: Path) -> list[dict]:
+    items: list[dict] = []
+    for entry in sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+        try:
+            is_dir = entry.is_dir()
+            items.append({
+                "name": entry.name,
+                "path": str(entry.resolve()),
+                "is_dir": is_dir,
+                "is_file": entry.is_file(),
+                "extension": entry.suffix.lower(),
+            })
+        except (PermissionError, OSError):
+            continue
+    return items
+
+
+def _build_browse_payload(target: Path) -> dict:
+    return {
+        "current_path": str(target),
+        "parent_path": str(target.parent) if target.parent != target else None,
+        "items": _browse_items(target),
+        "shortcuts": _browse_shortcuts(),
+    }
 
 
 class JobManager:
-    """Small local job manager for the web/API frontend.
+    """Local job manager with isolated worker processes and timeout recovery."""
 
-    It persists job metadata under the jobs root, launches background conversion
-    runs in threads, and exposes simple list/get semantics used by the HTTP API.
-    """
-
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        jobs_root: Path | None = None,
+        workspace_root: Path | None = None,
+        worker_timeout_seconds: int | None = None,
+        python_executable: str | None = None,
+        worker_env_overrides: dict[str, str] | None = None,
+        recover_on_init: bool = False,
+    ) -> None:
         self.lock = threading.Lock()
+        self.jobs_root = (jobs_root or JOBS_ROOT).resolve()
+        self.workspace_root = (workspace_root or ROOT).resolve()
+        self.worker_timeout_seconds = DEFAULT_JOB_TIMEOUT_SECONDS if worker_timeout_seconds is None else worker_timeout_seconds
+        self.python_executable = python_executable or sys.executable
+        self.worker_env_overrides = dict(worker_env_overrides or {})
+        self._workers: dict[str, dict[str, object]] = {}
+        self.jobs_root.mkdir(parents=True, exist_ok=True)
+        if recover_on_init:
+            self.recover_stale_jobs()
 
-    def create_job(self, source_format: str, target_format: str, input_path: str) -> dict:
+    def create_job(self, source_format: str, target_format: str, input_path: str, fidelity_mode: str = "preserve") -> dict:
+        self.reconcile_jobs()
         job_id = new_job_id()
-        job_dir = JOBS_ROOT / job_id
+        job_dir = self.jobs_root / job_id
         ensure_job_dirs(job_dir)
         copied = copy_input(Path(input_path), job_dir / "input")
+        created_at = now_ts()
         meta = {
             "job_id": job_id,
             "status": "queued",
+            "stage": "queued",
             "source_format": source_format,
             "target_format": target_format,
             "input_path": str(copied),
-            "created_at": now_ts(),
-            "updated_at": now_ts(),
+            "fidelity_mode": fidelity_mode,
+            "created_at": created_at,
+            "started_at": None,
+            "finished_at": None,
+            "updated_at": created_at,
+            "timeout_seconds": self.worker_timeout_seconds,
+            "worker_pid": None,
+            "failure_kind": None,
             "error": None,
         }
         write_job_meta(job_dir, meta)
-        threading.Thread(target=self._run_job, args=(job_id,), daemon=True).start()
-        return meta
-
-    def _run_job(self, job_id: str) -> None:
-        job_dir = JOBS_ROOT / job_id
-        meta = read_job_meta(job_dir)
-        meta["status"] = "running"
-        meta["updated_at"] = now_ts()
-        write_job_meta(job_dir, meta)
-        try:
-            result = route_and_run(
-                source_format=meta["source_format"],
-                target_format=meta["target_format"],
-                input_path=Path(meta["input_path"]),
-                workdir=job_dir,
-                job_id=job_id,
-            )
-            bundle = create_job_bundle(job_dir)
-            meta["status"] = result.status
-            meta["updated_at"] = now_ts()
-            meta["result"] = result.to_dict()
-            meta["bundle_path"] = str(bundle)
-            meta["timeline"] = self._build_timeline(result.to_dict())
-            write_job_meta(job_dir, meta)
-        except Exception as exc:
-            meta["status"] = "failed"
-            meta["updated_at"] = now_ts()
-            meta["error"] = {
-                "message": str(exc),
-                "traceback": traceback.format_exc(),
-            }
-            write_job_meta(job_dir, meta)
+        return self._launch_worker(job_id)
 
     def get_job(self, job_id: str) -> dict:
-        return read_job_meta(JOBS_ROOT / job_id)
-
-    def _build_timeline(self, result: dict) -> list[dict]:
-        compile_ok = result.get("validation", {}).get("compile_status") == "success"
-        base = [
-            {"agent": "April", "active_for": "ieee_to_acm", "status": "done" if result.get("direction") == "ieee_to_acm" else "idle"},
-            {"agent": "Friday", "active_for": "acm_to_ieee", "status": "done" if result.get("direction") == "acm_to_ieee" else "idle"},
-            {"agent": "Comp", "active_for": "all", "status": "done" if result.get("reports") else "idle"},
-        ]
-        for item in base:
-            if item["agent"] == "Comp" and not compile_ok:
-                item["status"] = "warning"
-        return base
+        self.reconcile_jobs()
+        return read_job_meta(self.jobs_root / job_id)
 
     def list_jobs(self) -> list[dict]:
-        if not JOBS_ROOT.exists():
+        self.reconcile_jobs()
+        if not self.jobs_root.exists():
             return []
-        jobs = []
-        for child in sorted(JOBS_ROOT.iterdir(), reverse=True):
-            if child.is_dir():
-                meta = read_job_meta(child)
-                # Ignore incomplete/placeholder job folders that have no metadata.
-                if not meta or not meta.get("job_id"):
-                    continue
-                jobs.append(meta)
+        jobs: list[dict] = []
+        for child in sorted(self.jobs_root.iterdir(), reverse=True):
+            if not child.is_dir():
+                continue
+            meta = read_job_meta(child)
+            if not meta or not meta.get("job_id"):
+                continue
+            jobs.append(meta)
         return jobs
+
+    def health(self) -> dict:
+        self.reconcile_jobs()
+        with self.lock:
+            active = sum(1 for info in self._workers.values() if info["process"].poll() is None)
+        return {
+            "ok": True,
+            "active_worker_count": active,
+            "jobs_root": str(self.jobs_root),
+            "timestamp": now_ts(),
+        }
+
+    def reconcile_jobs(self) -> None:
+        with self.lock:
+            items = list(self._workers.items())
+        for job_id, info in items:
+            process: subprocess.Popen = info["process"]  # type: ignore[assignment]
+            job_dir: Path = info["job_dir"]  # type: ignore[assignment]
+            meta = read_job_meta(job_dir)
+            if not meta:
+                self._cleanup_worker(job_id)
+                continue
+
+            timeout_seconds = int(meta.get("timeout_seconds") or self.worker_timeout_seconds)
+            started_at = float(meta.get("started_at") or meta.get("created_at") or now_ts())
+            returncode = process.poll()
+            if returncode is None:
+                if timeout_seconds > 0 and (now_ts() - started_at) > timeout_seconds:
+                    self._terminate_process(process)
+                    finished_at = now_ts()
+                    merge_job_meta(
+                        job_dir,
+                        {
+                            "status": "failed",
+                            "updated_at": finished_at,
+                            "finished_at": finished_at,
+                            "failure_kind": "timeout",
+                            "error": {
+                                "message": f"Job timed out after {timeout_seconds} seconds while in stage {meta.get('stage', 'unknown')}.",
+                                "stage": meta.get("stage"),
+                            },
+                        },
+                    )
+                    self._cleanup_worker(job_id)
+                continue
+
+            if meta.get("status") in TERMINAL_JOB_STATUSES:
+                self._cleanup_worker(job_id)
+                continue
+
+            finished_at = now_ts()
+            merge_job_meta(
+                job_dir,
+                {
+                    "status": "failed",
+                    "updated_at": finished_at,
+                    "finished_at": finished_at,
+                    "failure_kind": "worker_exit",
+                    "error": {
+                        "message": f"Worker exited with code {returncode} before completing the job.",
+                        "stage": meta.get("stage"),
+                    },
+                },
+            )
+            self._cleanup_worker(job_id)
+
+    def _launch_worker(self, job_id: str) -> dict:
+        job_dir = self.jobs_root / job_id
+        stdout_path = job_dir / "artifacts" / "worker.stdout.log"
+        stderr_path = job_dir / "artifacts" / "worker.stderr.log"
+        stdout_handle = stdout_path.open("a", encoding="utf-8")
+        stderr_handle = stderr_path.open("a", encoding="utf-8")
+        env = os.environ.copy()
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        env.update(self.worker_env_overrides)
+        started_at = now_ts()
+        try:
+            process = subprocess.Popen(
+                [
+                    self.python_executable,
+                    "-m",
+                    "paper_conversion_system.job_worker",
+                    "--job-dir",
+                    str(job_dir),
+                ],
+                cwd=self.workspace_root,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                env=env,
+            )
+        except Exception as exc:
+            stdout_handle.close()
+            stderr_handle.close()
+            finished_at = now_ts()
+            return merge_job_meta(
+                job_dir,
+                {
+                    "status": "failed",
+                    "updated_at": finished_at,
+                    "finished_at": finished_at,
+                    "failure_kind": "launch_error",
+                    "error": {
+                        "message": f"Worker launch failed: {exc}",
+                    },
+                },
+            )
+
+        meta = merge_job_meta(
+            job_dir,
+            {
+                "status": "running",
+                "stage": "queued",
+                "worker_pid": process.pid,
+                "started_at": started_at,
+                "updated_at": started_at,
+            },
+        )
+        with self.lock:
+            self._workers[job_id] = {
+                "process": process,
+                "job_dir": job_dir,
+                "stdout": stdout_handle,
+                "stderr": stderr_handle,
+            }
+        return meta
+
+    def recover_stale_jobs(self) -> None:
+        if not self.jobs_root.exists():
+            return
+        for child in self.jobs_root.iterdir():
+            if not child.is_dir():
+                continue
+            meta = read_job_meta(child)
+            if not meta or meta.get("status") not in ACTIVE_JOB_STATUSES:
+                continue
+            worker_pid = meta.get("worker_pid")
+            if isinstance(worker_pid, int) and worker_pid > 0:
+                self._terminate_pid(worker_pid)
+            finished_at = now_ts()
+            merge_job_meta(
+                child,
+                {
+                    "status": "failed",
+                    "updated_at": finished_at,
+                    "finished_at": finished_at,
+                    "failure_kind": "interrupted",
+                    "error": {
+                        "message": "Job was interrupted by a server restart before completion.",
+                        "stage": meta.get("stage"),
+                    },
+                },
+            )
+
+    def _cleanup_worker(self, job_id: str) -> None:
+        with self.lock:
+            info = self._workers.pop(job_id, None)
+        if not info:
+            return
+        for key in ("stdout", "stderr"):
+            handle = info.get(key)
+            try:
+                if handle is not None:
+                    handle.close()
+            except Exception:
+                pass
+
+    def _terminate_process(self, process: subprocess.Popen) -> None:
+        try:
+            process.terminate()
+            process.wait(timeout=3)
+            return
+        except Exception:
+            pass
+        try:
+            process.kill()
+            process.wait(timeout=3)
+        except Exception:
+            pass
+
+    def _terminate_pid(self, pid: int) -> None:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            return
+        except Exception:
+            pass
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/F"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
 
 
 JOB_MANAGER = JobManager()
@@ -151,6 +429,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._text(f"File not found: {file_path}", 404)
                 return self._text(file_path.read_text(encoding="utf-8"), ctype=ctype)
 
+            if path == "/api/health":
+                return self._json(JOB_MANAGER.health())
             if path == "/api/jobs":
                 return self._json(JOB_MANAGER.list_jobs())
             if path.startswith("/api/jobs/") and path.endswith("/download"):
@@ -173,7 +453,7 @@ class Handler(BaseHTTPRequestHandler):
                 parts = path.strip("/").split("/")
                 job_id = parts[2]
                 artifact_name = parts[-1]
-                job_dir = JOBS_ROOT / job_id
+                job_dir = JOB_MANAGER.jobs_root / job_id
                 candidate_paths = [
                     job_dir / "final" / artifact_name,
                     job_dir / "converted" / artifact_name,
@@ -194,35 +474,19 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/browse":
                 # File browser API: list directory contents
                 try:
-                    start_path = parse_qs(parsed.query).get("path", ["."])[0]
-                    target = Path(start_path).resolve()
-                    
-                    # Security: prevent escape to parent/unsafe paths
-                    # Allow any accessible directory
+                    raw_path = parse_qs(parsed.query).get("path", [""])[0]
+                    target = _resolve_browse_target(raw_path)
                     if not target.exists():
                         return self._json({"error": "Path not found"}, 404)
-                    
-                    items = []
+                    if not target.is_dir():
+                        return self._json({"error": "Path is not a directory"}, 400)
+
                     try:
-                        for entry in sorted(target.iterdir()):
-                            try:
-                                is_dir = entry.is_dir()
-                                items.append({
-                                    "name": entry.name,
-                                    "path": str(entry.resolve()),
-                                    "is_dir": is_dir,
-                                    "is_file": entry.is_file(),
-                                })
-                            except (PermissionError, OSError):
-                                continue
+                        payload = _build_browse_payload(target)
                     except (PermissionError, OSError) as e:
                         return self._json({"error": f"Cannot read directory: {str(e)}"}, 403)
-                    
-                    return self._json({
-                        "current_path": str(target),
-                        "parent_path": str(target.parent) if target.parent != target else None,
-                        "items": items,
-                    })
+
+                    return self._json(payload)
                 except Exception as e:
                     return self._json({"error": f"Browse failed: {str(e)}"}, 400)
             
@@ -254,6 +518,7 @@ class Handler(BaseHTTPRequestHandler):
                     source_format = payload.get("source_format", "").strip().lower()
                     target_format = payload.get("target_format", "").strip().lower()
                     input_path = payload.get("input_path", "").strip()
+                    fidelity_mode = payload.get("fidelity_mode", "preserve").strip().lower() or "preserve"
                     
                     # Strip quotes from path (from drag-drop or copy-paste)
                     if input_path.startswith('"') and input_path.endswith('"'):
@@ -282,6 +547,7 @@ class Handler(BaseHTTPRequestHandler):
                         source_format=source_format,
                         target_format=target_format,
                         input_path=input_path,
+                        fidelity_mode=fidelity_mode,
                     )
                     return self._json(meta, 201)
                 except json.JSONDecodeError as e:
@@ -298,6 +564,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def run_server(host: str = "127.0.0.1", port: int = 8080) -> None:
     JOBS_ROOT.mkdir(parents=True, exist_ok=True)
+    JOB_MANAGER.recover_stale_jobs()
+    JOB_MANAGER.reconcile_jobs()
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Academic Paper Converter UI running on http://{host}:{port}")
     server.serve_forever()

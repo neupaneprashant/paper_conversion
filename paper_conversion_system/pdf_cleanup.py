@@ -26,6 +26,8 @@ AGGRESSIVE_PATTERNS = [
     r"TABLE\s+[IVXLC0-9]+",
 ]
 
+_FRONTMATTER_BOUNDARY_RE = re.compile(r"\b(?:abstract|index\s*terms|keywords|introduction)\b", re.I)
+
 
 def clean_pdf_text(raw_text: str, mode: str = "safe") -> tuple[str, dict]:
     """Clean raw PDF text before structure extraction.
@@ -41,13 +43,21 @@ def clean_pdf_text(raw_text: str, mode: str = "safe") -> tuple[str, dict]:
     repeated = _find_repeated_lines(lines)
     cleaned_lines: list[str] = []
     removed_lines: list[str] = []
+    preserved_repeated_frontmatter: set[str] = set()
+    frontmatter_open = True
 
     for line in lines:
         stripped = line.strip()
         if not stripped:
             cleaned_lines.append("")
             continue
+        if _FRONTMATTER_BOUNDARY_RE.search(stripped):
+            frontmatter_open = False
         if stripped in repeated and len(stripped) > 30:
+            if frontmatter_open and stripped not in preserved_repeated_frontmatter:
+                preserved_repeated_frontmatter.add(stripped)
+                cleaned_lines.append(stripped)
+                continue
             removed_lines.append(stripped)
             continue
         if _matches_any(stripped, HEADER_FOOTER_PATTERNS):

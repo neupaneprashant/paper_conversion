@@ -163,11 +163,11 @@ def _check_skeleton(text: str, target_format: str) -> list[str]:
 def _check_citation_compliance(text: str, cpr: CanonicalPaperRepresentation, summary: ValidationSummary) -> str:
     """Determine citation compliance level and append any relevant warnings."""
     has_cite = "\\cite{" in text
-    has_bib = "\\bibliography{" in text or "\\printbibliography" in text
-    has_bib_style = "\\bibliographystyle{" in text or "\\printbibliography" in text
+    has_bib = "\\bibliography{" in text or "\\printbibliography" in text or "\\begin{thebibliography}" in text
+    has_bib_style = "\\bibliographystyle{" in text or "\\printbibliography" in text or "\\begin{thebibliography}" in text
 
     if not has_bib:
-        summary.warnings.append("No \\bibliography{...} or \\printbibliography detected")
+        summary.warnings.append("No \\bibliography{...}, \\printbibliography, or thebibliography detected")
         return "warn"
     if has_bib and not has_bib_style and "\\printbibliography" not in text:
         summary.warnings.append("\\bibliography present but no \\bibliographystyle detected")

@@ -1,5 +1,6 @@
 IEEE_MAIN_TEMPLATE = r'''\documentclass[conference]{{IEEEtran}}
 \usepackage{{graphicx}}
+\usepackage{{float}}
 \usepackage{{amsmath}}
 \begin{{document}}
 \title{{{title}}}
@@ -11,13 +12,13 @@ IEEE_MAIN_TEMPLATE = r'''\documentclass[conference]{{IEEEtran}}
 {keywords_block}
 {extra_frontmatter}
 {body}
-\bibliographystyle{{IEEEtran}}
-\bibliography{{references}}
+{bibliography_block}
 \end{{document}}
 '''
 
 ACM_MAIN_TEMPLATE = r'''\documentclass[sigconf]{{acmart}}
 \usepackage{{graphicx}}
+\usepackage{{float}}
 \usepackage{{amsmath}}
 \begin{{document}}
 \title{{{title}}}
@@ -29,7 +30,6 @@ ACM_MAIN_TEMPLATE = r'''\documentclass[sigconf]{{acmart}}
 {extra_frontmatter}
 \maketitle
 {body}
-\bibliographystyle{{ACM-Reference-Format}}
-\bibliography{{references}}
+{bibliography_block}
 \end{{document}}
 '''

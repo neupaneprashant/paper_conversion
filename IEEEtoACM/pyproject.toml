@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ieee-to-acm-review-app"
+version = "0.1.0"
+description = "Reviewable IEEE to ACM wrapper app for the local paper conversion system"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.0",
+    "pymupdf>=1.23.0",
+]
+
+[project.scripts]
+ieee-to-acm = "ieee_to_acm_app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ieee_to_acm_app*"]

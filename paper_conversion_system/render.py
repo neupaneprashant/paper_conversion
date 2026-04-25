@@ -27,6 +27,7 @@ def render_cpr_to_target(cpr: CanonicalPaperRepresentation, target_format: str, 
     keywords_block = _render_keywords(cpr, target_format)
     extra_frontmatter = _render_extra_frontmatter(cpr, target_format)
     acknowledgments_block = _render_acknowledgments(cpr, target_format)
+    bibliography_block = _render_bibliography(cpr, target_format)
     abstract_text = _escape_latex_specials(cpr.abstract) if escape_body else cpr.abstract
 
     if target_format == "acm":
@@ -37,6 +38,7 @@ def render_cpr_to_target(cpr: CanonicalPaperRepresentation, target_format: str, 
             keywords_block=keywords_block,
             body=body + acknowledgments_block,
             extra_frontmatter=extra_frontmatter,
+            bibliography_block=bibliography_block,
         )
     elif target_format == "ieee":
         tex = IEEE_MAIN_TEMPLATE.format(
@@ -46,6 +48,7 @@ def render_cpr_to_target(cpr: CanonicalPaperRepresentation, target_format: str, 
             keywords_block=keywords_block,
             body=body + acknowledgments_block,
             extra_frontmatter=extra_frontmatter,
+            bibliography_block=bibliography_block,
         )
     else:
         raise ValueError(f"Unsupported target format: {target_format}")
@@ -59,18 +62,104 @@ def render_cpr_to_target(cpr: CanonicalPaperRepresentation, target_format: str, 
 
 def _render_body(cpr: CanonicalPaperRepresentation, target_format: str, escape_body: bool = False) -> str:
     chunks: list[str] = []
+    figure_section_map = cpr.metadata.get("figure_section_map", {}) or {}
+    figure_anchor_map = cpr.metadata.get("figure_anchor_map", {}) or {}
+    table_section_map = cpr.metadata.get("table_section_map", {}) or {}
+    table_anchor_map = cpr.metadata.get("table_anchor_map", {}) or {}
+    table_text_map = cpr.metadata.get("table_text_map", {}) or {}
+    equation_text_map = cpr.metadata.get("equation_text_map", {}) or {}
+    equation_artifacts = cpr.metadata.get("equation_artifacts", []) or []
+    resolved_figure_sections = {
+        fig.label: _locate_figure_section(
+            cpr.sections,
+            fig.label,
+            str(figure_anchor_map.get(fig.label, "") or ""),
+            str(fig.caption or ""),
+            str(figure_section_map.get(fig.label, "") or ""),
+        )
+        for fig in cpr.figures
+    }
+    resolved_table_sections = {
+        table.label: _locate_artifact_section(cpr.sections, str(table_text_map.get(table.label, "") or ""), table_section_map.get(table.label, ""))
+        for table in cpr.tables
+    }
+    resolved_equation_sections = {
+        str(artifact.get("label", "") or ""): _locate_artifact_section(
+            cpr.sections,
+            str(artifact.get("raw_text", "") or equation_text_map.get(str(artifact.get("label", "") or ""), "") or ""),
+            str(artifact.get("section_title", "") or ""),
+        )
+        for artifact in equation_artifacts
+    }
+    remaining_figures = list(cpr.figures)
+    remaining_tables = list(cpr.tables)
+    remaining_equations = list(equation_artifacts)
     for section in cpr.sections:
         title = _map_section_title(section.title, target_format)
         if title.lower() == "references":
             continue
-        content = section.content.strip()
+        section_figures = [fig for fig in remaining_figures if resolved_figure_sections.get(fig.label, figure_section_map.get(fig.label, "")) == section.title]
+        section_tables = [table for table in remaining_tables if resolved_table_sections.get(table.label, table_section_map.get(table.label, "")) == section.title]
+        section_equations = [
+            artifact for artifact in remaining_equations
+            if resolved_equation_sections.get(str(artifact.get("label", "") or ""), artifact.get("section_title")) == section.title
+        ]
+        inline_artifacts: list[dict[str, str]] = []
+        for fig in section_figures:
+            inline_artifacts.append({
+                "anchor": figure_anchor_map.get(fig.label, ""),
+                "latex": _render_figures([fig]),
+            })
+        for table in section_tables:
+            inline_artifacts.append({
+                "anchor": table_anchor_map.get(table.label, ""),
+                "latex": _render_tables([table]),
+            })
+        for equation in section_equations:
+            inline_artifacts.append({
+                "anchor": equation.get("anchor_text", ""),
+                "latex": _render_equation_artifacts([equation]),
+            })
+
+        scrub_snippets: list[str] = []
+        for table in section_tables:
+            snippet = str(table_text_map.get(table.label, "") or "").strip()
+            if snippet:
+                scrub_snippets.append(snippet)
+        for equation in section_equations:
+            label = str(equation.get("label", "") or "")
+            snippet = str(equation.get("raw_text", "") or equation_text_map.get(label, "") or "").strip()
+            if snippet:
+                scrub_snippets.append(snippet)
+            for variant in equation.get("scrub_variants", []) or []:
+                variant_text = str(variant or "").strip()
+                if variant_text:
+                    scrub_snippets.append(variant_text)
+
+        content = _remove_artifact_snippets(section.content.strip(), scrub_snippets)
+        if section_tables:
+            content = _remove_table_residue(content)
+        if section_equations:
+            content = _remove_equation_residue(content)
         if escape_body:
-            content = _escape_latex_specials(content)
-        chunks.append(f"\\section{{{title}}}\n{content}\n")
-    if cpr.figures:
-        chunks.append(_render_figures(cpr))
-    if cpr.tables:
-        chunks.append(_render_tables(cpr))
+            content = _format_pdf_section_text(content)
+        content = _inject_artifacts(content, inline_artifacts, escape_body=escape_body)
+        section_chunk = [f"\\section{{{title}}}\n{content}\n"]
+        chunks.append("\n".join(section_chunk))
+
+        rendered_figure_labels = {fig.label for fig in section_figures}
+        rendered_table_labels = {table.label for table in section_tables}
+        rendered_equation_labels = {artifact.get("label") for artifact in section_equations}
+        remaining_figures = [fig for fig in remaining_figures if fig.label not in rendered_figure_labels]
+        remaining_tables = [table for table in remaining_tables if table.label not in rendered_table_labels]
+        remaining_equations = [artifact for artifact in remaining_equations if artifact.get("label") not in rendered_equation_labels]
+
+    if remaining_figures:
+        chunks.append(_render_figures(remaining_figures))
+    if remaining_tables:
+        chunks.append(_render_tables(remaining_tables))
+    if remaining_equations:
+        chunks.append(_render_equation_artifacts(remaining_equations))
     return "\n".join(chunks)
 
 
@@ -115,7 +204,7 @@ def _escape_latex_specials(text: str) -> str:
 def _render_keywords(cpr: CanonicalPaperRepresentation, target_format: str) -> str:
     if not cpr.keywords:
         return ""
-    joined = ", ".join(cpr.keywords)
+    joined = ", ".join(_escape_frontmatter_text(k) for k in cpr.keywords)
     if target_format == "ieee":
         return f"\\begin{{IEEEkeywords}}\n{joined}\n\\end{{IEEEkeywords}}"
     return f"\\keywords{{{joined}}}"
@@ -142,41 +231,94 @@ def _render_authors(cpr: CanonicalPaperRepresentation, target_format: str) -> st
     emails = [str(e).strip() for e in (cpr.metadata.get("emails", []) or []) if str(e).strip()]
 
     if target_format == "acm":
+        profile_block = _render_acm_author_profiles(cpr)
+        if profile_block:
+            return profile_block
         chunks: list[str] = []
         num_authors = len(cpr.authors)
         for i, name in enumerate(cpr.authors):
-            chunks.append(f"\\author{{{name}}}")
+            chunks.append(f"\\author{{{_escape_frontmatter_text(name)}}}")
             own_aff = aff[i] if i < len(aff) else None
             own_email = emails[i] if i < len(emails) else None
             if own_aff:
-                chunks.append(f"\\affiliation{{\\institution{{{own_aff}}}}}")
+                chunks.append(f"\\affiliation{{\\institution{{{_escape_frontmatter_text(own_aff)}}}}}")
             if own_email:
-                chunks.append(f"\\email{{{own_email}}}")
+                chunks.append(f"\\email{{{_escape_frontmatter_text(own_email)}}}")
             # Last author absorbs any trailing affiliations/emails we couldn't pair.
             if i == num_authors - 1:
                 for extra in aff[num_authors:]:
-                    chunks.append(f"\\affiliation{{\\institution{{{extra}}}}}")
+                    chunks.append(f"\\affiliation{{\\institution{{{_escape_frontmatter_text(extra)}}}}}")
                 for extra in emails[num_authors:]:
-                    chunks.append(f"\\email{{{extra}}}")
+                    chunks.append(f"\\email{{{_escape_frontmatter_text(extra)}}}")
         return "\n".join(chunks)
 
     # IEEE path: classic \author{A \and B \\ Aff1 \and Aff2 \\ emails}
-    author_line = " \\and ".join(cpr.authors)
+    author_line = " \\and ".join(_escape_frontmatter_text(name) for name in cpr.authors)
     extras: list[str] = []
     if aff:
-        extras.append(" \\and ".join(aff[: max(len(cpr.authors), len(aff))]))
+        extras.append(" \\and ".join(_escape_frontmatter_text(item) for item in aff[: max(len(cpr.authors), len(aff))]))
     if emails:
-        extras.append(" \\and ".join(emails[: max(len(cpr.authors), len(emails))]))
+        extras.append(" \\and ".join(_escape_frontmatter_text(item) for item in emails[: max(len(cpr.authors), len(emails))]))
     if extras:
         return author_line + " \\\\ " + " \\\\ ".join(extras)
     return author_line
+
+
+def _render_acm_author_profiles(cpr: CanonicalPaperRepresentation) -> str:
+    raw_profiles = cpr.metadata.get("author_profiles", []) or []
+    if not isinstance(raw_profiles, list):
+        return ""
+    profiles = [profile for profile in raw_profiles if isinstance(profile, dict) and str(profile.get("name", "")).strip()]
+    if not profiles:
+        return ""
+    author_names = [" ".join(str(name).split()) for name in cpr.authors]
+    profile_names = [" ".join(str(profile.get("name", "")).split()) for profile in profiles]
+    if author_names and profile_names[: len(author_names)] != author_names[: len(profile_names)]:
+        return ""
+
+    chunks: list[str] = []
+    for profile in profiles:
+        chunks.append(f"\\author{{{_escape_frontmatter_text(str(profile.get('name', '')).strip())}}}")
+        affiliation_lines = _render_acm_affiliation_profile(profile)
+        if affiliation_lines:
+            chunks.append("\\affiliation{%\n" + "\n".join(affiliation_lines) + "\n}")
+        email = str(profile.get("email", "") or "").strip()
+        if email:
+            chunks.append(f"\\email{{{_escape_frontmatter_text(email)}}}")
+    return "\n".join(chunks)
+
+
+def _render_acm_affiliation_profile(profile: dict) -> list[str]:
+    ordered_fields = [
+        ("department", "department"),
+        ("institution", "institution"),
+        ("city", "city"),
+        ("state", "state"),
+        ("country", "country"),
+    ]
+    lines: list[str] = []
+    seen_values: set[str] = set()
+    for key, macro in ordered_fields:
+        value = " ".join(str(profile.get(key, "") or "").split()).strip()
+        if not value:
+            continue
+        normalized = value.casefold()
+        if normalized in seen_values:
+            continue
+        seen_values.add(normalized)
+        lines.append(f"  \\{macro}{{{_escape_frontmatter_text(value)}}}")
+    return lines
 
 
 def _render_extra_frontmatter(cpr: CanonicalPaperRepresentation, target_format: str) -> str:
     if target_format == "acm":
         ccsxml = cpr.metadata.get("ccsxml", "")
         ccs_concepts = cpr.metadata.get("ccs_concepts", []) or []
-        chunks: list[str] = []
+        chunks: list[str] = [
+            r"\setcopyright{none}",
+            r"\settopmatter{printacmref=false}",
+            r"\acmConference[Converted Paper]{Converted Paper}{}{}",
+        ]
         if ccsxml:
             chunks.append(f"\\begin{{CCSXML}}\n{ccsxml}\n\\end{{CCSXML}}")
         for concept in ccs_concepts:
@@ -194,6 +336,14 @@ def _render_acknowledgments(cpr: CanonicalPaperRepresentation, target_format: st
     return f"\n\\section*{{Acknowledgments}}\n{ack}\n"
 
 
+def _render_bibliography(cpr: CanonicalPaperRepresentation, target_format: str) -> str:
+    bib_mode = str(cpr.metadata.get("bibliography_mode", "") or "").strip().lower()
+    if bib_mode == "thebibliography":
+        return _render_thebibliography_block(cpr)
+    style = "ACM-Reference-Format" if target_format == "acm" else "IEEEtran"
+    return f"\\bibliographystyle{{{style}}}\n\\bibliography{{references}}"
+
+
 def _map_section_title(title: str, target_format: str) -> str:
     canonical = " ".join(title.split())
     aliases = {
@@ -204,22 +354,360 @@ def _map_section_title(title: str, target_format: str) -> str:
     return aliases.get(canonical.strip().lower(), canonical)
 
 
-def _render_figures(cpr: CanonicalPaperRepresentation) -> str:
+def _render_figures(figures) -> str:
     chunks: list[str] = []
-    for fig in cpr.figures[:3]:
+    for fig in figures[:3]:
+        asset_block = "% Figure asset unavailable from PDF ingest"
+        if fig.path:
+            asset_block = f"\\includegraphics[width=\\linewidth]{{{fig.path}}}"
         chunks.append(
-            f"\\begin{{figure}}[tbp]\n\\centering\n% Figure asset unavailable from PDF ingest\n\\caption{{{fig.caption}}}\n\\label{{{fig.label}}}\n\\end{{figure}}"
+            f"\\begin{{figure}}[{fig.placement}]\n\\centering\n{asset_block}\n\\caption{{{fig.caption}}}\n\\label{{{fig.label}}}\n\\end{{figure}}"
         )
     return "\n\n".join(chunks)
 
 
-def _render_tables(cpr: CanonicalPaperRepresentation) -> str:
+def _render_tables(tables) -> str:
     chunks: list[str] = []
-    for table in cpr.tables[:2]:
+    for table in tables[:4]:
         chunks.append(
-            f"\\begin{{table}}[tbp]\n\\caption{{{table.caption}}}\n\\label{{{table.label}}}\n{table.latex}\n\\end{{table}}"
+            f"\\begin{{table}}[{table.placement}]\n\\caption{{{table.caption}}}\n\\label{{{table.label}}}\n{table.latex}\n\\end{{table}}"
         )
     return "\n\n".join(chunks)
+
+
+def _render_equation_artifacts(artifacts) -> str:
+    chunks: list[str] = []
+    for artifact in artifacts:
+        path = artifact.get("path", "")
+        if not path:
+            continue
+        chunks.append(
+            "\\begin{center}\n"
+            f"\\includegraphics[width=0.72\\linewidth]{{{path}}}\n"
+            "\\end{center}"
+        )
+    return "\n\n".join(chunks)
+
+
+def _inject_artifacts(content: str, artifacts: list[dict[str, str]], escape_body: bool) -> str:
+    placeholder_map: dict[str, str] = {}
+    working = content or ""
+    for index, artifact in enumerate(artifacts):
+        latex = artifact.get("latex", "").strip()
+        if not latex:
+            continue
+        token = f"CODEXARTIFACTTOKEN{index}END"
+        placeholder_map[token] = latex
+        anchor = (artifact.get("anchor") or "").strip()
+        anchor_target = _find_anchor_target(working, anchor)
+        if anchor_target:
+            working = working.replace(anchor_target, anchor_target + f"\n\n{token}\n", 1)
+        else:
+            suffix = "" if not working else "\n\n"
+            working += f"{suffix}{token}\n"
+
+    if escape_body:
+        working = _escape_latex_specials(working)
+
+    for token, latex in placeholder_map.items():
+        working = working.replace(token, latex)
+    return working
+
+
+def _format_pdf_section_text(content: str) -> str:
+    blocks: list[str] = []
+    for block in _split_render_blocks(content):
+        compact = re.sub(r"\s+", " ", block).strip()
+        if not compact:
+            continue
+        compact = re.sub(r"^(\\subsection\{[^}]+\})\s+", r"\1\n", compact)
+        compact = re.sub(r"^(\\subsubsection\{[^}]+\})\s+", r"\1\n", compact)
+        blocks.append(compact)
+    return "\n\n".join(blocks)
+
+
+def _split_render_blocks(content: str) -> list[str]:
+    text = (content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return []
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    raw_blocks = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    blocks: list[str] = []
+    for raw in raw_blocks:
+        pieces = re.split(r"(?=\\sub(?:sub)?section\{)", raw)
+        for piece in pieces:
+            stripped = piece.strip()
+            if stripped:
+                blocks.append(stripped)
+    return blocks
+
+
+def _apply_paragraphwise(content: str, transform) -> str:
+    paragraphs = _split_render_blocks(content)
+    if not paragraphs:
+        normalized = transform(content or "")
+        return normalized.strip()
+    updated: list[str] = []
+    for paragraph in paragraphs:
+        transformed = transform(paragraph)
+        transformed = transformed.strip()
+        if transformed:
+            updated.append(transformed)
+    return "\n\n".join(updated)
+
+
+def _remove_artifact_snippets(content: str, snippets: list[str]) -> str:
+    unique_snippets = sorted(
+        {_normalise_artifact_text(snippet or "") for snippet in snippets if snippet and len(" ".join(snippet.split())) >= 24},
+        key=len,
+        reverse=True,
+    )
+
+    def transform(paragraph: str) -> str:
+        working = _normalise_artifact_text(paragraph or "")
+        for snippet in unique_snippets:
+            if snippet in working:
+                working = working.replace(snippet, " ")
+                continue
+            words = snippet.split()
+            if len(words) >= 12:
+                prefix_candidates = [" ".join(words[:12])]
+                if len(words) >= 14 and words[0].upper() == "TABLE":
+                    prefix_candidates.append(" ".join(words[2:14]))
+                for prefix in prefix_candidates:
+                    if prefix in working:
+                        working = working.replace(prefix, " ")
+                        break
+                else:
+                    prefix = ""
+                if prefix:
+                    continue
+            if len(words) >= 10:
+                tail = " ".join(words[-10:])
+                if tail in working:
+                    working = working.replace(tail, " ")
+        return re.sub(r"\s+", " ", working).strip()
+
+    return _apply_paragraphwise(content, transform)
+
+
+def _remove_table_residue(content: str) -> str:
+    coord_pair = r"\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)"
+
+    def transform(paragraph: str) -> str:
+        working = _normalise_artifact_text(paragraph)
+        working = re.sub(
+            rf"(?:{coord_pair}\s*){{2}}-?\d+(?:\.\d+)?\s*ft",
+            " ",
+            working,
+            flags=re.I,
+        )
+        working = re.sub(
+            rf"(?:,\s*\d+\)\s*)?{coord_pair}\s*-?\d+(?:\.\d+)?\s*ft",
+            " ",
+            working,
+            flags=re.I,
+        )
+        working = re.sub(
+            r"\bActual\s+N=\d+\s+Positive\s+Negative\s+True\s+\d+\s+\d+\s+False\s+\d+\s+\d+\b",
+            " ",
+            working,
+            flags=re.I,
+        )
+        working = re.sub(r"\b1(?:5[0-9]|6[0-9])\b(?=\s*,\s*\d+\))", " ", working)
+        return re.sub(r"\s+", " ", working).strip()
+
+    return _apply_paragraphwise(content, transform)
+
+
+_EQUATION_MARKER_RE = re.compile(r"\(\d+\)")
+_EQUATION_WINDOW_RADIUS = 220
+_EQUATION_MAX_WINDOW = 260
+_EQUATION_TRAILING_SCAN = 48
+_EQUATION_TOKEN_RE = re.compile(
+    r"(?:=|\+|-|/|\*|\blog10\b|\bgamma\b|\bsqrt\b|\bDistance\b|\bPLlog\b|\bPL0\b|\bRSSI\b|\b[xydp](?:\d+)?\b)",
+    re.I,
+)
+_EQUATION_COORD_RE = re.compile(r"\(\s*[xydp]\d?\s*[-+]\s*[xydp]\d?\s*\)\d*", re.I)
+
+
+def _remove_equation_residue(content: str) -> str:
+    def transform(paragraph: str) -> str:
+        working = _normalise_artifact_text(paragraph)
+        spans = _find_equation_residue_spans(working)
+        if not spans:
+            return re.sub(r"\s+", " ", working).strip()
+        cleaned = _remove_spans(working, spans)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    return _apply_paragraphwise(content, transform)
+
+
+def _find_equation_residue_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for marker in _EQUATION_MARKER_RE.finditer(text):
+        span = _equation_window(text, marker.start(), marker.end())
+        if span is None:
+            continue
+        candidate = text[span[0]:span[1]]
+        if not _looks_like_equation_window(candidate):
+            continue
+        spans = _merge_spans(spans, span)
+    return spans
+
+
+def _equation_window(text: str, marker_start: int, marker_end: int) -> tuple[int, int] | None:
+    start_floor = max(0, marker_start - _EQUATION_WINDOW_RADIUS)
+    start = start_floor
+    for boundary in ("\n", ". ", ": ", "; "):
+        idx = text.rfind(boundary, start_floor, marker_start)
+        if idx != -1:
+            start = max(start, idx + len(boundary))
+    end_cap = min(len(text), marker_end + _EQUATION_TRAILING_SCAN)
+    end = end_cap
+    for boundary in ("\n", ". ", "; ", " 4)", " 5)", " 6)", " \\subsection", " \\section"):
+        idx = text.find(boundary, marker_end, end_cap)
+        if idx != -1:
+            end = min(end, idx)
+    if end <= start:
+        return None
+    if end - start > _EQUATION_MAX_WINDOW:
+        return None
+    return (start, end)
+
+
+def _looks_like_equation_window(candidate: str) -> bool:
+    compact = " ".join(candidate.split())
+    if not compact or len(compact) > _EQUATION_MAX_WINDOW:
+        return False
+    token_hits = len(_EQUATION_TOKEN_RE.findall(compact))
+    digit_hits = sum(ch.isdigit() for ch in compact)
+    has_assignment = "=" in compact
+    has_coordinate_term = bool(_EQUATION_COORD_RE.search(compact))
+    has_superscript_style = bool(re.search(r"[A-Za-z0-9]\)\d|\b[xydp]\d\b", compact, re.I))
+    if has_assignment and (token_hits >= 5 or has_coordinate_term):
+        return True
+    if has_coordinate_term and digit_hits >= 4 and token_hits >= 4:
+        return True
+    return has_assignment and has_superscript_style and digit_hits >= 2
+
+
+def _remove_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    cleaned: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        cleaned.append(text[cursor:start])
+        cleaned.append(" ")
+        cursor = end
+    cleaned.append(text[cursor:])
+    return "".join(cleaned)
+
+
+def _merge_spans(existing: list[tuple[int, int]], new_span: tuple[int, int]) -> list[tuple[int, int]]:
+    if not existing:
+        return [new_span]
+    merged = existing[:]
+    start, end = new_span
+    last_start, last_end = merged[-1]
+    if start <= last_end:
+        merged[-1] = (last_start, max(last_end, end))
+    else:
+        merged.append(new_span)
+    return merged
+
+
+def _find_anchor_target(content: str, anchor: str) -> str:
+    for candidate in _anchor_candidates(anchor):
+        if candidate and candidate in content and _anchor_is_safe(candidate):
+            return candidate
+    return ""
+
+
+def _anchor_candidates(anchor: str) -> list[str]:
+    cleaned = " ".join((anchor or "").split())
+    if not cleaned:
+        return []
+    candidates: list[str] = [cleaned]
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
+    if sentences:
+        candidates.append(sentences[-1])
+    words = cleaned.split()
+    for size in (16, 12, 8):
+        if len(words) > size:
+            candidates.append(" ".join(words[-size:]))
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
+
+def _anchor_is_safe(anchor: str) -> bool:
+    stripped = anchor.strip()
+    if not stripped:
+        return False
+    if stripped.endswith((".", ":", "!", "?")):
+        return True
+    return len(stripped.split()) >= 12
+
+
+def _locate_artifact_section(sections, snippet: str, fallback: str) -> str:
+    normalized_snippet = _normalise_artifact_text(snippet)
+    if not normalized_snippet:
+        return fallback
+    prefix = " ".join(normalized_snippet.split()[:12])
+    for section in sections:
+        normalized_content = _normalise_artifact_text(section.content)
+        if normalized_snippet in normalized_content:
+            return section.title
+        if prefix and prefix in normalized_content:
+            return section.title
+    return fallback
+
+
+_FIGURE_KEYWORD_STOPWORDS = {
+    "figure",
+    "fig",
+    "overview",
+    "results",
+    "system",
+    "model",
+    "method",
+    "paper",
+}
+
+
+def _locate_figure_section(sections, label: str, anchor: str, caption: str, fallback: str) -> str:
+    anchor_resolved = _locate_artifact_section(sections, anchor, "")
+    if anchor_resolved:
+        return anchor_resolved
+
+    number_match = re.search(r"(\d+)", label or "")
+    if number_match:
+        number = number_match.group(1)
+        reference_pattern = re.compile(rf"\b(?:Fig\.?|Figure)\s*{re.escape(number)}\b", re.I)
+        for section in sections:
+            if reference_pattern.search(section.content):
+                return section.title
+
+    caption_keywords = [
+        word.lower()
+        for word in re.findall(r"[A-Za-z][A-Za-z0-9\-]+", _normalise_artifact_text(caption or ""))
+        if len(word) > 3 and word.lower() not in _FIGURE_KEYWORD_STOPWORDS
+    ]
+    if caption_keywords:
+        best_title = fallback
+        best_score = 0
+        for section in sections:
+            normalized_content = _normalise_artifact_text(section.content).lower()
+            score = sum(1 for keyword in set(caption_keywords) if keyword in normalized_content)
+            if score > best_score:
+                best_title = section.title
+                best_score = score
+        if best_score >= 2 or (len(set(caption_keywords)) == 1 and best_score == 1):
+            return best_title
+
+    return fallback
 
 
 def _render_bib_stub(cpr: CanonicalPaperRepresentation) -> str:
@@ -250,6 +738,18 @@ def _render_bib_stub(cpr: CanonicalPaperRepresentation) -> str:
     return "\n\n".join(entries) + "\n"
 
 
+def _render_thebibliography_block(cpr: CanonicalPaperRepresentation) -> str:
+    if not cpr.references:
+        return "\\begin{thebibliography}{00}\n\\end{thebibliography}\n"
+    width = max(2, len(str(len(cpr.references))))
+    items: list[str] = [f"\\begin{{thebibliography}}{{{'9' * width}}}"]
+    for ref in cpr.references:
+        raw = _normalise_reference_text(ref.raw)
+        items.append(f"\\bibitem{{{ref.key}}} {raw or ref.key}")
+    items.append("\\end{thebibliography}")
+    return "\n".join(items) + "\n"
+
+
 # Recognised venue markers. Order matters: check conference-style first, then
 # journal-style, so a "Proc. of IEEE Conf." is classified as inproceedings rather
 # than as a journal article.
@@ -269,6 +769,15 @@ def _guess_bibtex_fields(key: str, raw: str) -> tuple[str, dict[str, str]]:
     a ``note`` field so nothing from the original reference is lost.
     """
     text = re.sub(r"\s+", " ", raw or "").strip().rstrip(".")
+    text = (
+        text.replace("ﬁ", "fi")
+        .replace("ﬂ", "fl")
+        .replace("–", "-")
+        .replace("—", "-")
+        .replace("“", '"')
+        .replace("”", '"')
+        .replace("’", "'")
+    )
     if not text:
         return "misc", {"note": raw or ""}
 
@@ -276,6 +785,7 @@ def _guess_bibtex_fields(key: str, raw: str) -> tuple[str, dict[str, str]]:
     year_match = re.search(r"\b(19|20)\d{2}\b", text)
     if year_match:
         year = year_match.group(0)
+    text = re.sub(r"\b\d{1,4}\s*$", "", text).strip().rstrip(".,")
 
     pages = ""
     pages_match = re.search(r"pp\.\s*([\d\u2013\u2014-]+)", text, re.I)
@@ -316,19 +826,30 @@ def _guess_bibtex_fields(key: str, raw: str) -> tuple[str, dict[str, str]]:
             cutoff_candidates.append(idx)
     if cutoff_candidates:
         cutoff_idx = min(cutoff_candidates)
-    author = text[:cutoff_idx].strip().rstrip(",")
+
+    sentence_split = re.split(r"(?<=[a-z0-9\)])\.\s+", text, maxsplit=2)
+    first_sentence = sentence_split[0].strip() if sentence_split else ""
+    if _looks_like_reference_author_block(first_sentence):
+        author = first_sentence.rstrip(",.")
+        cutoff_idx = len(first_sentence) + 1
+    else:
+        author = text[:cutoff_idx].strip().rstrip(",.")
     # If the "author" block is suspiciously long, it's probably run-together
     # content; clip it so BibTeX doesn't choke on a giant author list.
     if len(author) > 240:
         author = author[:240]
 
+    remainder_after_author = text[cutoff_idx:].strip().lstrip(",:.")
+    title_sentence = ""
+
     # Venue: between the end of the title and the next year/volume/page hint.
-    venue_start = 0
+    venue_start = cutoff_idx
     if quoted:
         venue_start = quoted.end()
-    elif cutoff_idx < len(text):
-        venue_start = cutoff_idx
-    venue_text = text[venue_start:].strip().lstrip(",:.")
+        venue_text = text[venue_start:].strip().lstrip(",:.")
+    else:
+        title_sentence = re.split(r"(?<=[a-z0-9\)])\.\s+", remainder_after_author, maxsplit=1)[0].strip()
+        venue_text = remainder_after_author[len(title_sentence):].strip().lstrip(",:.") if title_sentence else remainder_after_author
 
     booktitle = ""
     journal = ""
@@ -350,14 +871,17 @@ def _guess_bibtex_fields(key: str, raw: str) -> tuple[str, dict[str, str]]:
 
     if not title:
         # Last resort: use the chunk right after the author block as the title.
-        remainder = text[cutoff_idx:].strip().lstrip(",:.")
+        remainder = remainder_after_author
+        if _looks_like_reference_author_block(first_sentence) and len(sentence_split) >= 2:
+            remainder = ". ".join(sentence_split[1:]).strip()
+        title_sentence = re.split(r"(?<=[a-z0-9\)])\.\s+", remainder, maxsplit=1)[0].strip()
         # Cut at first venue marker so the title doesn't eat the venue.
         for marker in (" in Proc", " Proc.", ", Proceedings"):
             m_idx = remainder.find(marker)
             if m_idx > 0:
                 remainder = remainder[:m_idx]
                 break
-        title = remainder[:180].strip().rstrip(",.") or text[:180]
+        title = (title_sentence or remainder[:180]).strip().rstrip(",.") or text[:180]
 
     fields: dict[str, str] = {
         "author": author,
@@ -373,6 +897,64 @@ def _guess_bibtex_fields(key: str, raw: str) -> tuple[str, dict[str, str]]:
     return entry_type, fields
 
 
+def _looks_like_reference_author_block(text: str) -> bool:
+    if not text:
+        return False
+    if len(text) > 180:
+        return False
+    if '"' in text:
+        return False
+    if any(marker in text for marker in ("Journal", "Conference", "Proceedings", "Workshop", "Transactions")):
+        return False
+    return bool(
+        re.search(r"\b(?:[A-Z]\.){1,3}\s*[A-Z][A-Za-z'-]+", text)
+        or re.search(r"\b[A-Z][a-z]+,\s*[A-Z]\.", text)
+        or " and " in text
+    )
+
+
 def _sanitise_bib_value(value: str) -> str:
     """Escape characters that would break a BibTeX field value."""
     return (value or "").replace("{", "(").replace("}", ")").strip()
+
+
+def _escape_frontmatter_text(text: str) -> str:
+    if not text:
+        return text
+    result = text
+    for raw, escaped in _LATEX_SPECIAL_ESCAPES:
+        result = re.sub(rf"(?<!\\){re.escape(raw)}", escaped, result)
+    return result
+
+
+def _normalise_reference_text(text: str) -> str:
+    cleaned = (text or "").strip()
+    cleaned = (
+        cleaned.replace("ï¬", "fi")
+        .replace("ï¬‚", "fl")
+        .replace("â€“", "--")
+        .replace("â€”", "---")
+        .replace("â€œ", '"')
+        .replace("â€", '"')
+        .replace("â€™", "'")
+    )
+    return _escape_frontmatter_text(re.sub(r"\s+", " ", cleaned))
+
+
+def _normalise_artifact_text(text: str) -> str:
+    cleaned = (text or "").strip()
+    cleaned = (
+        cleaned.replace("ï¬", "fi")
+        .replace("ï¬‚", "fl")
+        .replace("â€“", "-")
+        .replace("â€”", "-")
+        .replace("âˆ’", "-")
+        .replace("−", "-")
+        .replace("Ã—", "x")
+        .replace("×", "x")
+        .replace("Î³", "γ")
+    )
+    cleaned = cleaned.replace("ï¬", "fi").replace("ï¬‚", "fl")
+    cleaned = cleaned.replace("×", "x")
+    cleaned = cleaned.replace("Î³", "gamma").replace("γ", "gamma")
+    return re.sub(r"\s+", " ", cleaned)

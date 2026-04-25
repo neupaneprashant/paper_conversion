@@ -7,6 +7,7 @@
 - Treat thesis/dissertation inputs as alternate degraded-mode sources.
 - Prefer explicit warnings over fabricated completion of missing context.
 - Keep outputs suitable for downstream website/API/OpenClaw orchestration.
+- For PDF inputs, support a fidelity mode that prioritizes visible preservation over editability.
 
 ## April (IEEE -> ACM)
 
@@ -16,6 +17,7 @@
 - Convert `IEEEkeywords` into `\\keywords{}`.
 - If source contains ACM-style metadata already, preserve only what is semantically valid in CPR.
 - Do not fabricate CCSXML, affiliations, email addresses, conference metadata, or acknowledgments details.
+- Escape frontmatter safely so affiliations like `A&T` do not break ACM compilation.
 
 ### Metadata
 - If acknowledgments exist, render them in `acks`.
@@ -33,6 +35,7 @@
 - Preserve bibliography intent.
 - Never fabricate missing bib entries.
 - Prefer partial but honest reference output over confident garbage.
+- For PDF inputs with noisy reference parsing, prefer `thebibliography` fallback over fragile auto-generated BibTeX.
 
 ## Friday (ACM -> IEEE)
 
@@ -46,6 +49,7 @@
 - Route acknowledgments to unnumbered `Acknowledgments` section.
 - Preserve only grounded author/affiliation structure.
 - If PDF extraction produced uncertain frontmatter, preserve only grounded fields and emit warnings for the rest.
+- Accept anchored visual fallback for tables/equations when structured recovery is weak.
 
 ### Body
 - Preserve section semantics and references.
@@ -56,6 +60,7 @@
 - Preserve bibliography intent.
 - Never fabricate missing bib entries.
 - Prefer partial but honest reference output over confident garbage.
+- For PDF fidelity mode, preserve reference text in `thebibliography` if BibTeX confidence is weak.
 
 ## Comp quality gate rules
 - Validate L1 skeleton sanity, L2 template compliance, L2 citation compliance, and L3 cross-reference integrity.
@@ -63,3 +68,4 @@
 - Repair only narrow mechanical LaTeX issues.
 - Never hide degraded confidence from PDF/thesis ingest.
 - Produce traceable reports that explain what was preserved, changed, unresolved, warned, compiled, and packaged.
+- Prefer anchored cropped artifacts for low-confidence tables/equations/figures instead of silently omitting them.

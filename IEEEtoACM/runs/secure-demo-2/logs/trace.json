@@ -1,0 +1,35 @@
+[
+  {
+    "step": "comp_input",
+    "ts": 1776759996.6985793,
+    "input_fingerprint": "61279c0558925cd5ac05566b1ba5a9358900fbdf032b9445338e22808f555db6",
+    "mapping_operations": [
+      "context_harmonization",
+      "structural_validation",
+      "compile_orchestration"
+    ],
+    "warnings": [],
+    "errors": [],
+    "compile_command_sequence": []
+  },
+  {
+    "step": "comp_compile",
+    "ts": 1776760003.5496008,
+    "input_fingerprint": "49e2dc4ab5e9bec5a26c294e7a74bb1eab37ac64de3d83dfb54fb8d7ff46cd05",
+    "mapping_operations": [],
+    "warnings": [
+      "Required sections not found (using body content as-is): Introduction"
+    ],
+    "errors": [
+      "Compile did not reach success threshold"
+    ],
+    "compile_command_sequence": [
+      "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex",
+      "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\bibtex.EXE main",
+      "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex",
+      "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\bibtex.EXE main",
+      "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\pdflatex.EXE -interaction=nonstopmode main.tex",
+      "C:\\Users\\Prash\\AppData\\Local\\Programs\\MiKTeX\\miktex\\bin\\x64\\bibtex.EXE main"
+    ]
+  }
+]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 import json
 import shutil
 import time
@@ -54,6 +54,7 @@ class Comp:
         workdir: Path,
         conversion_report: dict,
         job_id: str,
+        stage_callback: Callable[[str], None] | None = None,
     ) -> JobOutput:
         logger = StructuredLogger()
         logger.add(
@@ -73,6 +74,8 @@ class Comp:
         harmonization_report = self._harmonize(final_dir)
         target_format = "acm" if direction == "ieee_to_acm" else "ieee"
         validation = validate_project(final_dir, original_cpr, target_format)
+        if stage_callback is not None:
+            stage_callback("compile")
         compile_status, artifacts, compile_report = compile_project(final_dir)
         validation.compile_status = compile_status
         validation.warnings.extend(harmonization_report.get("warnings", []))
@@ -161,6 +164,8 @@ def route_and_run(
     workdir: Path,
     job_id: str | None = None,
     llm_provider: LLMContextProvider | None = None,
+    fidelity_mode: str = "preserve",
+    stage_callback: Callable[[str], None] | None = None,
 ) -> JobOutput:
     direction = _route_direction(source_format, target_format)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -169,12 +174,27 @@ def route_and_run(
     # PDF input feeds the CPR pipeline directly — no synthetic LaTeX detour.
     agent_source: Path | CanonicalPaperRepresentation = input_path
     if input_path.is_file() and input_path.suffix.lower() == ".pdf":
-        agent_source = parse_pdf_to_cpr(input_path, source_format_hint=source_format)
+        if stage_callback is not None:
+            stage_callback("pdf_ingest")
+        agent_source = parse_pdf_to_cpr(
+            input_path,
+            source_format_hint=source_format,
+            assets_dir=converted_dir / "figures",
+            fidelity_mode=fidelity_mode,
+        )
 
     if direction == "ieee_to_acm":
-        converted_project, conversion_report, cpr = April().convert(agent_source, converted_dir)
+        converted_project, conversion_report, cpr = April().convert(
+            agent_source,
+            converted_dir,
+            stage_callback=stage_callback,
+        )
     elif direction == "acm_to_ieee":
-        converted_project, conversion_report, cpr = Friday().convert(agent_source, converted_dir)
+        converted_project, conversion_report, cpr = Friday().convert(
+            agent_source,
+            converted_dir,
+            stage_callback=stage_callback,
+        )
     else:
         raise ValueError(f"Unsupported direction: {source_format} -> {target_format}")
 
@@ -185,6 +205,7 @@ def route_and_run(
         workdir,
         conversion_report.__dict__,
         job_id=job_id or new_job_id(),
+        stage_callback=stage_callback,
     )
 
 
