@@ -65,7 +65,8 @@ class _ConversionAgent:
         report = ConversionReport(
             mapped_fields=[
                 "title", "authors", "abstract", "keywords",
-                "sections", "references", "acknowledgments",
+                "sections", "figures", "tables", "equations",
+                "references", "acknowledgments",
             ],
             changed_sections=[s.title for s in cpr.sections],
             unresolved_items=self._collect_unresolved(cpr),

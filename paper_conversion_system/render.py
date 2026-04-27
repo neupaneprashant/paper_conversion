@@ -84,10 +84,10 @@ def _render_body(cpr: CanonicalPaperRepresentation, target_format: str, escape_b
         for table in cpr.tables
     }
     resolved_equation_sections = {
-        str(artifact.get("label", "") or ""): _locate_artifact_section(
+        str(artifact.get("label", "") or ""): _locate_equation_section(
             cpr.sections,
-            str(artifact.get("raw_text", "") or equation_text_map.get(str(artifact.get("label", "") or ""), "") or ""),
-            str(artifact.get("section_title", "") or ""),
+            artifact,
+            str(equation_text_map.get(str(artifact.get("label", "") or ""), "") or ""),
         )
         for artifact in equation_artifacts
     }
@@ -117,9 +117,13 @@ def _render_body(cpr: CanonicalPaperRepresentation, target_format: str, escape_b
             })
         for equation in section_equations:
             inline_artifacts.append({
+                "kind": "equation",
                 "anchor": equation.get("anchor_text", ""),
+                "equation_number": equation.get("equation_number", ""),
+                "source_order": equation.get("source_order", 0),
                 "latex": _render_equation_artifacts([equation]),
             })
+        inline_artifacts.sort(key=lambda artifact: int(artifact.get("source_order") or 0))
 
         scrub_snippets: list[str] = []
         for table in section_tables:
@@ -316,8 +320,8 @@ def _render_extra_frontmatter(cpr: CanonicalPaperRepresentation, target_format: 
         ccs_concepts = cpr.metadata.get("ccs_concepts", []) or []
         chunks: list[str] = [
             r"\setcopyright{none}",
-            r"\settopmatter{printacmref=false}",
-            r"\acmConference[Converted Paper]{Converted Paper}{}{}",
+            r"\settopmatter{printacmref=false, printccs=false}",
+            r"\renewcommand\footnotetextcopyrightpermission[1]{}",
         ]
         if ccsxml:
             chunks.append(f"\\begin{{CCSXML}}\n{ccsxml}\n\\end{{CCSXML}}")
@@ -392,6 +396,8 @@ def _render_equation_artifacts(artifacts) -> str:
 def _inject_artifacts(content: str, artifacts: list[dict[str, str]], escape_body: bool) -> str:
     placeholder_map: dict[str, str] = {}
     working = content or ""
+    target_tokens: dict[str, list[str]] = {}
+    fallback_tokens: list[str] = []
     for index, artifact in enumerate(artifacts):
         latex = artifact.get("latex", "").strip()
         if not latex:
@@ -399,12 +405,23 @@ def _inject_artifacts(content: str, artifacts: list[dict[str, str]], escape_body
         token = f"CODEXARTIFACTTOKEN{index}END"
         placeholder_map[token] = latex
         anchor = (artifact.get("anchor") or "").strip()
-        anchor_target = _find_anchor_target(working, anchor)
+        anchor_target = ""
+        if artifact.get("kind") == "equation":
+            anchor_target = _find_equation_anchor_target(working, str(artifact.get("equation_number", "") or ""))
+        if not anchor_target:
+            anchor_target = _find_anchor_target(working, anchor)
         if anchor_target:
-            working = working.replace(anchor_target, anchor_target + f"\n\n{token}\n", 1)
+            target_tokens.setdefault(anchor_target, []).append(token)
         else:
-            suffix = "" if not working else "\n\n"
-            working += f"{suffix}{token}\n"
+            fallback_tokens.append(token)
+
+    for anchor_target, tokens in target_tokens.items():
+        insertion = "\n\n" + "\n\n".join(tokens) + "\n"
+        working = working.replace(anchor_target, anchor_target + insertion, 1)
+
+    if fallback_tokens:
+        suffix = "" if not working else "\n\n"
+        working += f"{suffix}" + "\n\n".join(fallback_tokens) + "\n"
 
     if escape_body:
         working = _escape_latex_specials(working)
@@ -514,6 +531,7 @@ def _remove_table_residue(content: str) -> str:
             working,
             flags=re.I,
         )
+        working = re.sub(r"\b(?:Actual\s+N=\d+\s+)?(?:Positive\s+)?Negative\s+True\s+False\b", " ", working, flags=re.I)
         working = re.sub(r"\b1(?:5[0-9]|6[0-9])\b(?=\s*,\s*\d+\))", " ", working)
         return re.sub(r"\s+", " ", working).strip()
 
@@ -525,7 +543,7 @@ _EQUATION_WINDOW_RADIUS = 220
 _EQUATION_MAX_WINDOW = 260
 _EQUATION_TRAILING_SCAN = 48
 _EQUATION_TOKEN_RE = re.compile(
-    r"(?:=|\+|-|/|\*|\blog10\b|\bgamma\b|\bsqrt\b|\bDistance\b|\bPLlog\b|\bPL0\b|\bRSSI\b|\b[xydp](?:\d+)?\b)",
+    r"(?:=|\+|-|/|\*|×|\bx\b|\blog10\b|\bgamma\b|\bsqrt\b|\bDistance\b|\bPLlog\b|\bPL0\b|\bRSSI\b|\b[xydp](?:\d+)?\b)",
     re.I,
 )
 _EQUATION_COORD_RE = re.compile(r"\(\s*[xydp]\d?\s*[-+]\s*[xydp]\d?\s*\)\d*", re.I)
@@ -535,9 +553,8 @@ def _remove_equation_residue(content: str) -> str:
     def transform(paragraph: str) -> str:
         working = _normalise_artifact_text(paragraph)
         spans = _find_equation_residue_spans(working)
-        if not spans:
-            return re.sub(r"\s+", " ", working).strip()
-        cleaned = _remove_spans(working, spans)
+        cleaned = _remove_spans(working, spans) if spans else working
+        cleaned = re.sub(r"\b(?:Actual\s+N=\d+\s+)?(?:Positive\s+)?Negative\s+True\s+False\b", " ", cleaned, flags=re.I)
         return re.sub(r"\s+", " ", cleaned).strip()
 
     return _apply_paragraphwise(content, transform)
@@ -585,9 +602,14 @@ def _looks_like_equation_window(candidate: str) -> bool:
     has_assignment = "=" in compact
     has_coordinate_term = bool(_EQUATION_COORD_RE.search(compact))
     has_superscript_style = bool(re.search(r"[A-Za-z0-9]\)\d|\b[xydp]\d\b", compact, re.I))
+    has_fraction_like_math = bool(re.search(r"\b[A-Z]{1,3}\s*\+\s*[A-Z]{1,3}\b", compact)) and bool(
+        re.search(r"(?:×|x)\s*100|\b100\s*(?:×|x)\b", compact, re.I)
+    )
     if has_assignment and (token_hits >= 5 or has_coordinate_term):
         return True
     if has_coordinate_term and digit_hits >= 4 and token_hits >= 4:
+        return True
+    if has_fraction_like_math and digit_hits >= 3:
         return True
     return has_assignment and has_superscript_style and digit_hits >= 2
 
@@ -621,6 +643,38 @@ def _find_anchor_target(content: str, anchor: str) -> str:
         if candidate and candidate in content and _anchor_is_safe(candidate):
             return candidate
     return ""
+
+
+def _find_equation_anchor_target(content: str, equation_number: str) -> str:
+    number = str(equation_number or "").strip()
+    if not number:
+        return ""
+    reference_re = re.compile(
+        rf"\b(?:eq\.?|equation)\s*\(?\s*{re.escape(number)}\s*\)?",
+        re.I,
+    )
+    for sentence in _sentence_like_spans(content):
+        if reference_re.search(sentence):
+            return sentence.strip()
+    return ""
+
+
+def _sentence_like_spans(content: str) -> list[str]:
+    text = content or ""
+    if not text.strip():
+        return []
+    spans: list[str] = []
+    start = 0
+    for match in re.finditer(r"[.!?](?:\s+|$)", text):
+        end = match.end()
+        candidate = text[start:end].strip()
+        if candidate:
+            spans.append(candidate)
+        start = end
+    tail = text[start:].strip()
+    if tail:
+        spans.append(tail)
+    return spans
 
 
 def _anchor_candidates(anchor: str) -> list[str]:
@@ -663,6 +717,25 @@ def _locate_artifact_section(sections, snippet: str, fallback: str) -> str:
         if prefix and prefix in normalized_content:
             return section.title
     return fallback
+
+
+def _locate_equation_section(sections, artifact: dict, text_map_snippet: str) -> str:
+    number = str(artifact.get("equation_number", "") or "").strip()
+    if number:
+        reference_re = re.compile(
+            rf"\b(?:eq\.?|equation)\s*\(?\s*{re.escape(number)}\s*\)?",
+            re.I,
+        )
+        for section in sections:
+            if reference_re.search(section.content):
+                return section.title
+
+    anchor_resolved = _locate_artifact_section(sections, str(artifact.get("anchor_text", "") or ""), "")
+    if anchor_resolved:
+        return anchor_resolved
+
+    raw_snippet = str(artifact.get("raw_text", "") or text_map_snippet or "")
+    return _locate_artifact_section(sections, raw_snippet, str(artifact.get("section_title", "") or ""))
 
 
 _FIGURE_KEYWORD_STOPWORDS = {

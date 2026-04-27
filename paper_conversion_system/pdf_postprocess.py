@@ -123,12 +123,24 @@ def _extract_frontmatter_from_sections(cpr: CanonicalPaperRepresentation) -> Can
 def _separate_references(cpr: CanonicalPaperRepresentation) -> CanonicalPaperRepresentation:
     updated_sections: list[Section] = []
     extracted_refs: list[Reference] = []
+    reference_section_seen = False
     for index, section in enumerate(cpr.sections):
         title_lower = section.title.strip().lower()
         if title_lower in _REFERENCE_SECTION_TITLES:
             refs_text = _strip_reference_tail_noise(section.content)
             extracted_refs.extend(_parse_reference_entries(refs_text))
             updated_sections.append(Section(title="References", content=refs_text))
+            reference_section_seen = True
+            continue
+
+        if reference_section_seen and _looks_like_reference_continuation(section):
+            continuation = _strip_reference_tail_noise(f"{section.title} {section.content}".strip())
+            if updated_sections and updated_sections[-1].title == "References":
+                merged = f"{updated_sections[-1].content} {continuation}".strip()
+                updated_sections[-1] = Section(title="References", content=merged)
+            else:
+                updated_sections.append(Section(title="References", content=continuation))
+            extracted_refs.extend(_parse_reference_entries(continuation))
             continue
 
         body_text, refs_text = _split_embedded_reference_block(
@@ -154,6 +166,18 @@ def _separate_references(cpr: CanonicalPaperRepresentation) -> CanonicalPaperRep
 
 _REFERENCE_SECTION_TITLES = {"references", "bibliography", "works cited"}
 _REFERENCE_MARKER_RE = re.compile(r"\b(?:REFERENCES|References|BIBLIOGRAPHY|Bibliography|WORKS\s+CITED|Works\s+Cited)\b")
+
+
+def _looks_like_reference_continuation(section: Section) -> bool:
+    combined = f"{section.title} {section.content}".strip()
+    if not combined or len(combined.split()) < 6:
+        return False
+    if re.search(r"\[\d+\]", combined):
+        return True
+    return bool(
+        re.search(r"\b(?:19|20)\d{2}\b", combined)
+        and re.search(r"\b(?:conference|proceedings|transactions|journal|pages?)\b", combined, re.I)
+    )
 
 
 def _split_embedded_reference_block(content: str, prefer_split: bool = False) -> tuple[str, str]:

@@ -29,6 +29,8 @@ ACM_MAIN_TEMPLATE = r'''\documentclass[sigconf]{{acmart}}
 {keywords_block}
 {extra_frontmatter}
 \maketitle
+\thispagestyle{{plain}}
+\pagestyle{{plain}}
 {body}
 {bibliography_block}
 \end{{document}}

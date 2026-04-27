@@ -238,6 +238,138 @@ def test_pdf_artifact_text_is_removed_when_visual_fallback_is_inserted(tmp_path:
     assert "\\includegraphics[width=0.72\\linewidth]{artifacts/equations/equation_p4_1.png}" in text
 
 
+def test_pdf_equation_residue_removes_multiply_x_variant(tmp_path: Path):
+    cpr = CanonicalPaperRepresentation(
+        title="Equation Residue",
+        authors=["Alice"],
+        sections=[
+            Section(
+                title="Experiment",
+                content=(
+                    "The success rate was computed using equation (4). "
+                    "As a result, the scheme provided a 95.63% validation success rate. "
+                    "TP + TN N x 100 (4) PERFORMANCE MEASUREMENT Actual N=1260 Positive Negative True False"
+                ),
+            )
+        ],
+        metadata={
+            "ingest_mode": "pdf",
+            "equation_artifacts": [
+                {
+                    "label": "eqimg:4:1",
+                    "path": "artifacts/equations/equation_p4_1.png",
+                    "section_title": "Experiment",
+                    "anchor_text": "The success rate was computed using equation (4).",
+                    "equation_number": "4",
+                    "source_order": 1,
+                    "raw_text": "TP + TN × 100 N (4)",
+                    "scrub_variants": ["TP + TN N x 100 (4)"],
+                }
+            ],
+        },
+    )
+    out = tmp_path / "out"
+    render_cpr_to_target(cpr, "acm", out)
+    text = (out / "main.tex").read_text(encoding="utf-8")
+    assert "TP + TN N x 100 (4)" not in text
+    assert "PERFORMANCE MEASUREMENT Actual" not in text
+    assert "Negative True False" not in text
+    assert "\\includegraphics[width=0.72\\linewidth]{artifacts/equations/equation_p4_1.png}" in text
+
+
+def test_pdf_equation_artifacts_anchor_by_equation_number(tmp_path: Path):
+    cpr = CanonicalPaperRepresentation(
+        title="Equation Placement",
+        authors=["Alice"],
+        sections=[
+            Section(
+                title="Method",
+                content=(
+                    "The model computes distance using equation (1). "
+                    "Where the variables are defined immediately after the display. "
+                    "The next step estimates coordinates with equation (2). "
+                    "The validation text continues after the second display."
+                ),
+            ),
+            Section(title="Experiment", content="The experiment should not receive equations (1) or (2)."),
+        ],
+        metadata={
+            "ingest_mode": "pdf",
+            "equation_artifacts": [
+                {
+                    "label": "eqimg:9:1",
+                    "path": "artifacts/equations/equation_wrong_section_1.png",
+                    "section_title": "Experiment",
+                    "anchor_text": "OCR anchor that will not match",
+                    "equation_number": "1",
+                    "source_order": 20,
+                    "raw_text": "x = y (1)",
+                },
+                {
+                    "label": "eqimg:9:2",
+                    "path": "artifacts/equations/equation_wrong_section_2.png",
+                    "section_title": "Experiment",
+                    "anchor_text": "another stale anchor",
+                    "equation_number": "2",
+                    "source_order": 30,
+                    "raw_text": "z = q (2)",
+                },
+            ],
+        },
+    )
+    out = tmp_path / "out"
+    render_cpr_to_target(cpr, "acm", out)
+    text = (out / "main.tex").read_text(encoding="utf-8")
+    eq1 = "\\includegraphics[width=0.72\\linewidth]{artifacts/equations/equation_wrong_section_1.png}"
+    eq2 = "\\includegraphics[width=0.72\\linewidth]{artifacts/equations/equation_wrong_section_2.png}"
+    assert text.index("equation (1).") < text.index(eq1) < text.index("Where the variables")
+    assert text.index("equation (2).") < text.index(eq2) < text.index("The validation text")
+    assert text.index(eq2) < text.index("\\section{Experiment}")
+
+
+def test_same_anchor_artifacts_preserve_source_order(tmp_path: Path):
+    cpr = CanonicalPaperRepresentation(
+        title="Shared Anchor",
+        authors=["Alice"],
+        sections=[
+            Section(
+                title="Method",
+                content="The following equations define the system using equation (1) and equation (2). The prose continues after both displays.",
+            )
+        ],
+        metadata={
+            "ingest_mode": "pdf",
+            "equation_artifacts": [
+                {
+                    "label": "eqimg:1:1",
+                    "path": "artifacts/equations/equation_1.png",
+                    "section_title": "Method",
+                    "anchor_text": "The following equations define the system using equation (1) and equation (2).",
+                    "equation_number": "",
+                    "source_order": 1,
+                    "raw_text": "a = b (1)",
+                },
+                {
+                    "label": "eqimg:1:2",
+                    "path": "artifacts/equations/equation_2.png",
+                    "section_title": "Method",
+                    "anchor_text": "The following equations define the system using equation (1) and equation (2).",
+                    "equation_number": "",
+                    "source_order": 2,
+                    "raw_text": "c = d (2)",
+                },
+            ],
+        },
+    )
+    out = tmp_path / "out"
+    render_cpr_to_target(cpr, "acm", out)
+    text = (out / "main.tex").read_text(encoding="utf-8")
+    eq1 = "artifacts/equations/equation_1.png"
+    eq2 = "artifacts/equations/equation_2.png"
+    assert text.index(eq1) < text.index(eq2)
+    assert text.index(eq2) < text.index("The prose continues")
+
+
 def test_pdf_section_heading_keeps_dropcap_in_body():
     text = (
         "I. INTRODUCTION\n"
@@ -248,7 +380,7 @@ def test_pdf_section_heading_keeps_dropcap_in_body():
     )
     sections = _extract_sections(text)
     assert sections[0].title == "Introduction"
-    assert sections[0].content.startswith("DIGITAL signatures")
+    assert sections[0].content.startswith("Digital signatures")
 
 
 def test_pdf_extract_sections_detects_unnumbered_headings():
@@ -407,6 +539,31 @@ def test_pdf_embedded_references_are_split_from_body_section():
     assert updated.references[1].raw == "B. Author, Another paper, 2023."
 
 
+def test_reference_continuation_section_after_references_is_merged():
+    cpr = CanonicalPaperRepresentation(
+        title="Reference continuation",
+        authors=["Alice"],
+        sections=[
+            Section(title="Conclusion", content="Closing text."),
+            Section(
+                title="References",
+                content="[13] H. M. Therar, E. A. Mohammed, and A. J. Ali.",
+            ),
+            Section(
+                title="Biometric",
+                content=(
+                    "signature based public key security system. In 2020 International Conference on Advanced Science "
+                    "and Engineering (ICOASE), pages 1-6, 2020. [14] L. Zhu. Electronic signature based on digital signature."
+                ),
+            ),
+        ],
+        references=[],
+    )
+    updated = _separate_references(cpr)
+    assert [section.title for section in updated.sections] == ["Conclusion", "References"]
+    assert "Biometric signature based public key security system" in updated.sections[-1].content
+
+
 def test_pdf_body_prose_does_not_false_split_on_lowercase_references_word():
     cpr = CanonicalPaperRepresentation(
         title="Body references",
@@ -444,6 +601,7 @@ def test_equation_region_groups_multiline_system_without_table_rows():
     assert len(regions) == 1
     assert "Actual points" not in regions[0]["raw_text"]
     assert "(x −x3)2 + (y −y3)2 = d2" in regions[0]["raw_text"]
+    assert regions[0]["equation_number"] == "2"
 
 
 def test_pdf_figure_is_attached_to_matching_section_without_explicit_map(tmp_path: Path):
@@ -497,7 +655,7 @@ def test_pdf_render_preserves_paragraph_breaks_for_acm(tmp_path: Path):
     assert "This is the first paragraph of the converted paper.\n\nThis is the second paragraph of the converted paper." in text
 
 
-def test_acm_render_adds_conference_stub_frontmatter(tmp_path: Path):
+def test_acm_render_suppresses_placeholder_conference_frontmatter(tmp_path: Path):
     cpr = CanonicalPaperRepresentation(
         title="Conference Stub",
         authors=["Alice"],
@@ -507,8 +665,10 @@ def test_acm_render_adds_conference_stub_frontmatter(tmp_path: Path):
     render_cpr_to_target(cpr, "acm", out)
     text = (out / "main.tex").read_text(encoding="utf-8")
     assert "\\setcopyright{none}" in text
-    assert "\\settopmatter{printacmref=false}" in text
-    assert "\\acmConference[Converted Paper]{Converted Paper}{}{}" in text
+    assert "\\settopmatter{printacmref=false, printccs=false}" in text
+    assert "\\renewcommand\\footnotetextcopyrightpermission[1]{}" in text
+    assert "Converted Paper" not in text
+    assert "\\acmConference" not in text
 
 
 def test_equation_region_variants_include_assignment_form():
@@ -520,4 +680,5 @@ def test_equation_region_variants_include_assignment_form():
     ]
     regions = _detect_equation_regions(lines, 595.0)
     assert len(regions) == 1
+    assert regions[0]["equation_number"] == "3"
     assert "Distance = p (x2 −x1)2 + (y2 −y1)2 (3)" in regions[0]["scrub_variants"]

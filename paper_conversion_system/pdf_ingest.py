@@ -290,6 +290,9 @@ def _extract_page_level_visuals(
                     "path": image_rel,
                     "anchor_text": equation["anchor_text"],
                     "section_title": equation["section_title"],
+                    "equation_number": equation.get("equation_number", ""),
+                    "source_order": page_index * 10000 + int(equation.get("source_order", eq_idx)),
+                    "page_number": page_index + 1,
                     "placement": "H",
                     "raw_text": equation["raw_text"],
                     "raw_lines": equation.get("raw_lines", []),
@@ -488,11 +491,14 @@ def _detect_equation_regions(lines: list[dict], page_width: float) -> list[dict]
             idx = end
             continue
         bbox = _union_bboxes([line["bbox"] for line in region_lines])
+        equation_number = _extract_equation_number(raw_lines)
         regions.append(
             {
                 "bbox": bbox,
                 "section_title": _infer_section_title(lines, idx),
                 "anchor_text": _anchor_from_lines(lines, idx, origin_bbox=origin_bbox, page_width=page_width),
+                "equation_number": equation_number,
+                "source_order": int(bbox.y0 * 10),
                 "raw_text": _cleanup(_linearize_equation_lines(raw_lines)),
                 "raw_lines": raw_lines,
                 "scrub_variants": _equation_scrub_variants(raw_lines),
@@ -608,6 +614,18 @@ def _has_nearby_equation_context(lines: list[dict], idx: int, page_width: float)
     return False
 
 
+def _extract_equation_number(raw_lines: list[str]) -> str:
+    for raw in raw_lines:
+        match = re.fullmatch(r"\((\d+)\)", _cleanup(raw))
+        if match:
+            return match.group(1)
+    for raw in raw_lines:
+        match = re.search(r"\((\d+)\)\s*$", _cleanup(raw))
+        if match:
+            return match.group(1)
+    return ""
+
+
 def _linearize_equation_lines(raw_lines: list[str]) -> str:
     chunks: list[str] = []
     equation_numbers: list[str] = []
@@ -667,10 +685,17 @@ def _equation_scrub_variants(raw_lines: list[str]) -> list[str]:
         variable_fragments = [line for line in non_numbers[1:] if re.fullmatch(r"[A-Za-z]\d*", line)]
         if operator_fragments and variable_fragments:
             add(" ".join([non_numbers[0], *variable_fragments, *operator_fragments, *equation_numbers]))
+            for operator in operator_fragments:
+                if "×" in operator:
+                    add(" ".join([non_numbers[0], *variable_fragments, operator.replace("×", "x"), *equation_numbers]))
         assignment_fragments = [line for line in non_numbers if line.endswith("=")]
         formula_fragments = [line for line in non_numbers if line not in assignment_fragments and re.search(r"[()]", line)]
         if assignment_fragments and formula_fragments:
             add(" ".join([assignment_fragments[0], *variable_fragments, *formula_fragments, *equation_numbers]))
+
+    for variant in list(variants):
+        if "×" in variant:
+            add(variant.replace("×", "x"))
 
     return variants
 
@@ -1458,7 +1483,13 @@ def _normalize_heading(title: str) -> str:
 
 
 def _repair_split_drop_cap(text: str) -> str:
-    return re.sub(r"^([A-Z])\s+([A-Z]{2,}\b)", lambda m: m.group(1) + m.group(2), text.strip())
+    repaired = re.sub(r"^([A-Z])\s+([A-Z]{2,}\b)", lambda m: m.group(1) + m.group(2), text.strip())
+    return re.sub(
+        r"^([A-Z]{3,})(?=\s+[a-z])",
+        lambda m: m.group(1).capitalize(),
+        repaired,
+        count=1,
+    )
 
 
 def _cleanup(text: str) -> str:
