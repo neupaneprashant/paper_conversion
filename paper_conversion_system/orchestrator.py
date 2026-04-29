@@ -1,9 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Protocol
 import concurrent.futures
 import json
+import logging
 import os
 import re
 import shutil
@@ -25,6 +26,8 @@ from .pdf_ingest import parse_pdf_to_cpr
 
 if TYPE_CHECKING:
     from .openclaw import OpenClawConversionDriver
+
+logger = logging.getLogger(__name__)
 
 
 def _count_words(text: str) -> int:
@@ -50,25 +53,43 @@ def _extract_pdf_text(pdf_path: Path) -> str:
         import fitz  # PyMuPDF
     except Exception:
         return ""
+    doc = None
     try:
         doc = fitz.open(str(pdf_path))
         return "\n".join(page.get_text() for page in doc)
     except Exception:
         return ""
+    finally:
+        # PyMuPDF holds an OS file handle; closing avoids file-locking issues
+        # on Windows and unbounded handle growth during repeated fidelity scoring.
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass
 
 
-def _compute_fidelity(original_cpr: CanonicalPaperRepresentation, final_pdf_path: str | None, project_dir: Path) -> tuple[float | None, dict]:
-    """Compute a coarse fidelity score: word retention * artifact retention.
+def _compute_fidelity(
+    original_cpr: CanonicalPaperRepresentation,
+    final_pdf_path: str | None,
+    project_dir: Path,
+    compile_report: dict | None = None,
+) -> tuple[float | None, dict]:
+    """Compute a post-compile fidelity score from text + compile signals.
 
-    This is intentionally heuristic. The goal is to catch obvious regressions
-    (e.g. output PDF missing most of the body) even when LaTeX compilation
-    succeeds.
+    The score is intentionally cheap and explainable. It blends:
+    - source/output word retention
+    - figure preservation
+    - citation resolution
+    - layout warning pressure from hbox/vbox warnings
     """
     details: dict[str, object] = {}
-    if not final_pdf_path:
-        return None, details
-    out_text = _extract_pdf_text(Path(final_pdf_path))
-    out_words = _count_words(out_text)
+    compile_signals = dict((compile_report or {}).get("fidelity_signals", {}) or {})
+    details["compile_signals"] = compile_signals
+    out_words = 0
+    if final_pdf_path:
+        out_text = _extract_pdf_text(Path(final_pdf_path))
+        out_words = _count_words(out_text)
     details["output_words"] = out_words
 
     ingest_mode = str(original_cpr.metadata.get("ingest_mode", "") or "")
@@ -98,7 +119,7 @@ def _compute_fidelity(original_cpr: CanonicalPaperRepresentation, final_pdf_path
     details["tables_in"] = tab_in
     details["equations_in"] = eq_in
 
-    # For now, count output artifacts by whether corresponding asset files exist.
+    # Count output figure assets by whether corresponding files exist.
     fig_out = 0
     for fig in getattr(original_cpr, "figures", []) or []:
         try:
@@ -108,27 +129,71 @@ def _compute_fidelity(original_cpr: CanonicalPaperRepresentation, final_pdf_path
             continue
     details["figures_resolved"] = fig_out
 
-    # Tables/equations are LaTeX-generated; treat compile success as "resolved".
-    # This keeps the score from collapsing on papers with no extracted images.
+    # Tables/equations are still approximated more loosely than figures.
     tab_out = tab_in if tab_in else 0
     eq_out = eq_in if eq_in else 0
     details["tables_resolved"] = tab_out
     details["equations_resolved"] = eq_out
 
+    includegraphics_count = int(compile_signals.get("figure_include_count") or 0)
+    missing_figure_count = int(compile_signals.get("missing_figure_count") or 0)
+    undefined_citation_count = int(compile_signals.get("undefined_citation_count") or 0)
+    citation_key_count = int(compile_signals.get("citation_key_count") or 0)
+    overfull_hbox_count = int(compile_signals.get("overfull_hbox_count") or 0)
+    underfull_hbox_count = int(compile_signals.get("underfull_hbox_count") or 0)
+    overfull_vbox_count = int(compile_signals.get("overfull_vbox_count") or 0)
+    underfull_vbox_count = int(compile_signals.get("underfull_vbox_count") or 0)
+
+    figure_expected = max(fig_in, includegraphics_count)
+    if figure_expected:
+        figure_ratio = max(0.0, 1.0 - (missing_figure_count / figure_expected))
+    elif fig_in:
+        figure_ratio = fig_out / fig_in if fig_in else 1.0
+    else:
+        figure_ratio = 1.0
+    details["figure_ratio"] = round(figure_ratio, 4)
+
+    if citation_key_count:
+        reference_ratio = max(0.0, 1.0 - (undefined_citation_count / citation_key_count))
+    else:
+        reference_ratio = 1.0
+    details["reference_ratio"] = round(reference_ratio, 4)
+
     artifact_ratio = 1.0
     if fig_in:
         artifact_ratio *= (fig_out / fig_in)
-    if tab_in:
-        artifact_ratio *= 1.0
-    if eq_in:
-        artifact_ratio *= 1.0
     details["artifact_ratio"] = round(artifact_ratio, 4)
 
+    layout_penalty = min(
+        0.45,
+        (0.03 * overfull_hbox_count)
+        + (0.01 * underfull_hbox_count)
+        + (0.04 * overfull_vbox_count)
+        + (0.015 * underfull_vbox_count),
+    )
+    layout_ratio = max(0.0, 1.0 - layout_penalty)
+    details["layout_ratio"] = round(layout_ratio, 4)
+    details["layout_penalty"] = round(layout_penalty, 4)
+
+    table_ratio = 1.0 if tab_in == 0 else (tab_out / tab_in if tab_in else 1.0)
+    equation_ratio = 1.0 if eq_in == 0 else (eq_out / eq_in if eq_in else 1.0)
+    details["table_ratio"] = round(table_ratio, 4)
+    details["equation_ratio"] = round(equation_ratio, 4)
+
     if word_ratio is None:
+        if not final_pdf_path:
+            details["score_reason"] = "no_final_pdf"
+            return 0.0, details
         return None, details
-    # Cap word ratio at 1.0; expansions shouldn't inflate fidelity.
+
     word_ratio_capped = min(1.0, max(0.0, float(word_ratio)))
-    score = word_ratio_capped * float(artifact_ratio)
+    score = (
+        (0.45 * word_ratio_capped)
+        + (0.20 * figure_ratio)
+        + (0.20 * reference_ratio)
+        + (0.10 * min(table_ratio, equation_ratio))
+        + (0.05 * layout_ratio)
+    )
     return round(score, 4), details
 
 
@@ -173,6 +238,7 @@ class Comp:
         workdir: Path,
         conversion_report: dict,
         job_id: str,
+        conversion_method: str = "local",
         stage_callback: Callable[[str], None] | None = None,
     ) -> JobOutput:
         logger = StructuredLogger()
@@ -203,7 +269,7 @@ class Comp:
             for snippet in compile_report.get("log_snippets", [])
         )
 
-        # LLM repair loop — up to 2 attempts when compile fails and LLM is available.
+        # LLM repair loop â€” up to 2 attempts when compile fails and LLM is available.
         _MAX_LLM_REPAIRS = 2
         if (
             compile_status != "success"
@@ -260,12 +326,25 @@ class Comp:
             validation.warnings.append(
                 "PDF compile skipped: LaTeX tooling not installed (pdflatex/bibtex missing)."
             )
+            validation.fidelity_score = None
+            validation.fidelity_details = {
+                "score_reason": "compile_blocked_by_tooling",
+                "compile_signals": compile_report.get("fidelity_signals", {}),
+            }
         elif compile_status != "success":
             validation.errors.append("Compile did not reach success threshold")
+            validation.fidelity_score = 0.0
+            validation.fidelity_details = {
+                "score_reason": "compile_failed",
+                "compile_signals": compile_report.get("fidelity_signals", {}),
+            }
         else:
-            # Compile succeeded: compute coarse fidelity score to catch obviously
-            # lossy outputs (e.g., a compiling PDF that dropped most content).
-            fidelity_score, fidelity_details = _compute_fidelity(original_cpr, artifacts.pdf_path, final_dir)
+            fidelity_score, fidelity_details = _compute_fidelity(
+                original_cpr,
+                artifacts.pdf_path,
+                final_dir,
+                compile_report=compile_report,
+            )
             validation.fidelity_score = fidelity_score
             validation.fidelity_details = fidelity_details or {}
             min_score = float(os.environ.get("PAPER_CONVERSION_FIDELITY_MIN_SCORE", "0.65") or "0.65")
@@ -293,6 +372,7 @@ class Comp:
             job_id=job_id,
             direction=direction,
             status=status,
+            conversion_method=conversion_method,
             converted_source_path=str(converted_project),
             final_pdf_path=artifacts.pdf_path,
             validation=validation,
@@ -363,8 +443,10 @@ def route_and_run(
     converted_dir = workdir / "converted"
     converted_dir.mkdir(parents=True, exist_ok=True)
     use_llm_postprocess = llm_provider is not None
+    conversion_method = "local"
+    fallback_reason = ""
 
-    # PDF input feeds the CPR pipeline directly — no synthetic LaTeX detour.
+    # PDF input feeds the CPR pipeline directly â€” no synthetic LaTeX detour.
     is_pdf = input_path.is_file() and input_path.suffix.lower() == ".pdf"
     agent_source: Path | CanonicalPaperRepresentation = input_path
     if is_pdf:
@@ -378,7 +460,7 @@ def route_and_run(
         )
 
     # OpenClaw LLM path: use April/Friday as GPT-backed agent sessions.
-    # Only applies to LaTeX source — PDF and archive inputs fall back to the local pipeline.
+    # Only applies to LaTeX source â€” PDF and archive inputs fall back to the local pipeline.
     is_archive_project = input_path.suffix.lower() == ".zip" or (
         input_path.is_dir() and (input_path / ".paper_conversion_source_archive").exists()
     )
@@ -388,6 +470,7 @@ def route_and_run(
     if openclaw_driver is not None and not is_pdf and is_archive_project:
         openclaw_driver = None
         use_llm_postprocess = False
+        fallback_reason = "archive_input_forces_local_pipeline"
 
     _llm_converted = False
     if openclaw_driver is not None and not is_pdf:
@@ -404,7 +487,7 @@ def route_and_run(
             # Run the LLM call in a thread so we can apply a hard timeout
             # without letting the job-manager process-kill fire first.
             # If it times out or errors, fall through to the local pipeline.
-            _LLM_CALL_TIMEOUT = 480  # seconds — generous for large papers
+            _LLM_CALL_TIMEOUT = 480  # seconds â€” generous for large papers
             converted_latex: str | None = None
             conversion_report = None
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _executor:
@@ -412,19 +495,15 @@ def route_and_run(
                 try:
                     converted_latex, conversion_report = _future.result(timeout=_LLM_CALL_TIMEOUT)
                 except concurrent.futures.TimeoutError:
-                    print(
-                        f"[OpenClaw] LLM conversion timed out after {_LLM_CALL_TIMEOUT}s "
-                        "— falling back to local pipeline."
-                    )
+                    logger.warning("llm_conversion_timeout after %ss; falling back to local pipeline", _LLM_CALL_TIMEOUT)
                     openclaw_driver = None
                     use_llm_postprocess = False
+                    fallback_reason = f"llm_timeout_{_LLM_CALL_TIMEOUT}s"
                 except Exception as _llm_exc:
-                    print(
-                        f"[OpenClaw] LLM conversion failed ({_llm_exc}) "
-                        "— falling back to local pipeline."
-                    )
+                    logger.warning("llm_conversion_failed (%s); falling back to local pipeline", _llm_exc)
                     openclaw_driver = None
                     use_llm_postprocess = False
+                    fallback_reason = f"llm_error:{_llm_exc}"
 
             if converted_latex is not None:
                 (converted_dir / "main.tex").write_text(converted_latex, encoding="utf-8")
@@ -436,17 +515,19 @@ def route_and_run(
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(asset, dest)
 
-                # Ensure \bibliography{references} always resolves — alias the first
+                # Ensure \bibliography{references} always resolves â€” alias the first
                 # .bib file found to references.bib if not already present.
                 _ensure_references_bib(src_root, converted_dir)
 
                 converted_project = converted_dir
                 cpr = CanonicalPaperRepresentation()
                 _llm_converted = True
+                conversion_method = "llm"
         else:
-            # Paper too large for LLM context — fall through to local pipeline.
+            # Paper too large for LLM context â€” fall through to local pipeline.
             openclaw_driver = None
             use_llm_postprocess = False
+            fallback_reason = "input_too_large_for_llm_context"
 
     if not _llm_converted:
         if direction == "ieee_to_acm":
@@ -463,6 +544,14 @@ def route_and_run(
             )
         else:
             raise ValueError(f"Unsupported direction: {source_format} -> {target_format}")
+        conversion_method = "local"
+        if fallback_reason:
+            try:
+                conversion_report.warnings.append(
+                    f"LLM path unavailable; used local pipeline ({fallback_reason})."
+                )
+            except Exception:
+                pass
 
     return Comp(llm_provider=llm_provider if use_llm_postprocess else None).process(
         direction,
@@ -471,6 +560,7 @@ def route_and_run(
         workdir,
         conversion_report.__dict__,
         job_id=job_id or new_job_id(),
+        conversion_method=conversion_method,
         stage_callback=stage_callback,
     )
 
@@ -591,3 +681,4 @@ def _ensure_references_bib(src_root: Path, output_dir: Path) -> None:
             best = bib
     if best is not None:
         shutil.copy2(best, ref_dest)
+

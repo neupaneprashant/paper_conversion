@@ -2,16 +2,24 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
 import re
 import shutil
 import subprocess
 import fitz
+import logging
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
 
 from .models import CanonicalPaperRepresentation, Figure, Section, Reference, Table
 from .pdf_cleanup import clean_pdf_text, aggressive_cleanup_pass
 from .pdf_doctype import detect_pdf_document_type, extract_thesis_body_text
 from .pdf_postprocess import refine_cpr_from_pdf
 from .pdf_thesis import parse_thesis_text_to_cpr
+
+logger = logging.getLogger(__name__)
+SUPPORTED_PDF_BACKENDS = {"heuristic", "pdfplumber", "grobid"}
 
 
 def parse_pdf_to_cpr(
@@ -28,26 +36,46 @@ def parse_pdf_to_cpr(
     otherwise applies PDF cleanup, extracts CPR fields, refines the CPR,
     and optionally attempts an aggressive cleanup pass when confidence is high.
     """
+    requested_backend = os.environ.get("PAPER_CONVERSION_PDF_BACKEND", "heuristic").strip().lower() or "heuristic"
+    backend = requested_backend if requested_backend in SUPPORTED_PDF_BACKENDS else "heuristic"
+    grobid_url = (os.environ.get("PAPER_CONVERSION_GROBID_URL", "") or "").strip()
+    if backend == "grobid" and grobid_url:
+        grobid_cpr = _parse_pdf_with_grobid(pdf_path, source_format_hint, grobid_url, fidelity_mode=fidelity_mode)
+        if grobid_cpr is not None:
+            return grobid_cpr
     doc = fitz.open(str(pdf_path))
-    pages = [page.get_text() for page in doc]
-    raw_text = "\n\n".join(pages)
-    doc_type, doc_meta = detect_pdf_document_type(raw_text)
-    extracted_images = _extract_embedded_images(doc, assets_dir)
-    (
-        page_figures,
-        page_tables,
-        equation_artifacts,
-        figure_section_map,
-        figure_anchor_map,
-        table_section_map,
-        table_anchor_map,
-        table_text_map,
-        equation_text_map,
-    ) = _extract_page_level_visuals(doc, assets_dir, extracted_images)
+    try:
+        pages = [page.get_text() for page in doc]
+        raw_text = "\n\n".join(pages)
+        doc_type, doc_meta = detect_pdf_document_type(raw_text)
+        extracted_images = _extract_embedded_images(doc, assets_dir)
+        (
+            page_figures,
+            page_tables,
+            equation_artifacts,
+            figure_section_map,
+            figure_anchor_map,
+            table_section_map,
+            table_anchor_map,
+            table_text_map,
+            equation_text_map,
+        ) = _extract_page_level_visuals(doc, assets_dir, extracted_images)
+        page_count = len(doc)
+    finally:
+        # Release the OS file handle as soon as we've extracted everything we
+        # need from PyMuPDF. Subsequent code only needs the in-memory results.
+        try:
+            doc.close()
+        except Exception:
+            pass
+    if backend in {"pdfplumber", "heuristic"}:
+        supplemental_tables = _extract_tables_with_pdfplumber(pdf_path, assets_dir)
+        if supplemental_tables:
+            page_tables.extend(supplemental_tables)
     if doc_type == "thesis_dissertation":
         cpr = parse_thesis_text_to_cpr(raw_text, source_path=str(pdf_path))
         cpr.metadata["document_type_meta"] = doc_meta
-        cpr.metadata["page_count"] = len(doc)
+        cpr.metadata["page_count"] = page_count
         if extracted_images:
             cpr.metadata["extracted_figure_assets"] = extracted_images
         return cpr
@@ -69,7 +97,9 @@ def parse_pdf_to_cpr(
         "source_format": source_format_hint or _guess_format(text),
         "source_path": str(pdf_path),
         "ingest_mode": "pdf",
-        "page_count": len(doc),
+        "pdf_backend": backend,
+        "requested_pdf_backend": requested_backend,
+        "page_count": page_count,
         "cleanup": cleanup_meta,
         "document_type": doc_type,
         "document_type_meta": doc_meta,
@@ -95,6 +125,18 @@ def parse_pdf_to_cpr(
         references=references,
         metadata=metadata,
     )
+    if requested_backend not in SUPPORTED_PDF_BACKENDS:
+        cpr.metadata.setdefault("warnings", []).append(
+            f"Requested PDF backend '{requested_backend}' is unsupported in this build; using heuristic parser."
+        )
+    elif backend == "grobid" and not grobid_url:
+        cpr.metadata.setdefault("warnings", []).append(
+            "Requested PDF backend 'grobid' but PAPER_CONVERSION_GROBID_URL is unset; using heuristic parser."
+        )
+    elif backend == "grobid":
+        cpr.metadata.setdefault("warnings", []).append(
+            "Requested PDF backend 'grobid' failed over to heuristic parsing for this file."
+        )
     cpr = refine_cpr_from_pdf(cpr)
     cpr = _merge_page_level_visuals(cpr, page_figures, page_tables)
     cpr = _attach_extracted_figure_assets(cpr, extracted_images)
@@ -161,6 +203,99 @@ def _extract_embedded_images(doc: fitz.Document, assets_dir: Path | None) -> lis
             out_path.write_bytes(image_bytes)
             extracted.append(f"figures/{filename}")
     return extracted
+
+
+def _parse_pdf_with_grobid(
+    pdf_path: Path,
+    source_format_hint: str | None,
+    grobid_url: str,
+    fidelity_mode: str,
+) -> CanonicalPaperRepresentation | None:
+    """Parse a PDF via GROBID fulltext endpoint when configured."""
+    endpoint = grobid_url.rstrip("/") + "/api/processFulltextDocument"
+    boundary = "----PaperConvBoundary"
+    payload = pdf_path.read_bytes()
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="input"; filename="{pdf_path.name}"\r\n'
+        "Content-Type: application/pdf\r\n\r\n"
+    ).encode("utf-8") + payload + f"\r\n--{boundary}--\r\n".encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=body,
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            xml_data = resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        logger.warning("grobid_parse_failed pdf=%s url=%s err=%s", pdf_path, grobid_url, exc)
+        return None
+
+    try:
+        root = ET.fromstring(xml_data)
+    except ET.ParseError as exc:
+        logger.warning("grobid_xml_invalid pdf=%s err=%s", pdf_path, exc)
+        return None
+
+    ns = {"tei": "http://www.tei-c.org/ns/1.0"}
+
+    def text_of(path: str) -> str:
+        el = root.find(path, ns)
+        if el is None:
+            return ""
+        return " ".join("".join(el.itertext()).split())
+
+    title = text_of(".//tei:titleStmt/tei:title")
+    authors: list[str] = []
+    for author in root.findall(".//tei:titleStmt/tei:author", ns):
+        pers = author.find(".//tei:persName", ns)
+        if pers is None:
+            continue
+        name = " ".join("".join(pers.itertext()).split())
+        if name:
+            authors.append(name)
+
+    abstract = text_of(".//tei:profileDesc/tei:abstract")
+    sections: list[Section] = []
+    for div in root.findall(".//tei:text/tei:body/tei:div", ns):
+        head = div.find("./tei:head", ns)
+        heading = " ".join("".join(head.itertext()).split()) if head is not None else "Section"
+        paragraphs = []
+        for p in div.findall("./tei:p", ns):
+            para = " ".join("".join(p.itertext()).split())
+            if para:
+                paragraphs.append(para)
+        if paragraphs:
+            sections.append(Section(title=heading or "Section", content="\n\n".join(paragraphs)))
+
+    references: list[Reference] = []
+    for idx, bibl in enumerate(root.findall(".//tei:listBibl/tei:biblStruct", ns), start=1):
+        raw = " ".join("".join(bibl.itertext()).split())
+        if raw:
+            references.append(Reference(key=f"ref{idx}", raw=raw))
+
+    metadata = {
+        "source_format": source_format_hint or "unknown",
+        "source_path": str(pdf_path),
+        "ingest_mode": "pdf",
+        "pdf_backend": "grobid",
+        "fidelity_mode": fidelity_mode,
+        "reference_parser": "grobid",
+        "warnings": [],
+    }
+    if not sections:
+        metadata["warnings"].append("GROBID returned no section blocks; local fallback may be preferable for this file.")
+    return CanonicalPaperRepresentation(
+        title=title or pdf_path.stem,
+        authors=authors,
+        abstract=abstract,
+        keywords=[],
+        sections=sections or [Section(title="Body", content=text_of(".//tei:text/tei:body"))],
+        references=references,
+        metadata=metadata,
+    )
 
 
 def _attach_extracted_figure_assets(
@@ -361,6 +496,54 @@ def _table_lines_to_latex(lines: list[str]) -> str:
     latex_lines.append("\\hline")
     latex_lines.append("\\end{tabular}")
     return "\n".join(latex_lines)
+
+
+def _extract_tables_with_pdfplumber(pdf_path: Path, assets_dir: Path | None) -> list[Table]:
+    """Optional table extraction pass using pdfplumber for PDF ingest fidelity."""
+    try:
+        import pdfplumber  # type: ignore
+    except Exception:
+        return []
+
+    out: list[Table] = []
+    artifact_root = assets_dir.parent / "artifacts" / "tables" if assets_dir is not None else None
+    if artifact_root is not None:
+        artifact_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            for page_idx, page in enumerate(pdf.pages, start=1):
+                tables = page.extract_tables() or []
+                for idx, table_data in enumerate(tables, start=1):
+                    rows = [[(cell or "").strip() for cell in row] for row in table_data if row]
+                    rows = [row for row in rows if any(row)]
+                    if len(rows) < 2:
+                        continue
+                    col_count = max(len(row) for row in rows)
+                    norm_rows: list[list[str]] = []
+                    for row in rows:
+                        padded = row + [""] * (col_count - len(row))
+                        norm_rows.append(padded[:col_count])
+                    latex_lines = [f"\\begin{{tabular}}{{{' | '.join(['l'] * col_count)}}}", "\\hline"]
+                    for r_idx, row in enumerate(norm_rows):
+                        safe = [
+                            cell.replace("\\", r"\textbackslash{}").replace("&", r"\&").replace("%", r"\%").replace("_", r"\_")
+                            for cell in row
+                        ]
+                        latex_lines.append(" & ".join(safe) + r" \\")
+                        if r_idx == 0:
+                            latex_lines.append("\\hline")
+                    latex_lines.extend(["\\hline", "\\end{tabular}"])
+                    label = f"tab:plumber:{page_idx}:{idx}"
+                    caption = f"Extracted table {idx} (page {page_idx})"
+                    out.append(Table(label=label, caption=caption, latex="\n".join(latex_lines), placement="H"))
+    except Exception as exc:
+        logger.warning("pdfplumber_table_extract_failed pdf=%s err=%s", pdf_path, exc)
+        return []
+
+    if out:
+        logger.info("pdfplumber_table_extract_ok pdf=%s count=%d", pdf_path, len(out))
+    return out
 
 
 def _collect_page_lines(page_dict: dict) -> list[dict]:

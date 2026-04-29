@@ -26,16 +26,46 @@ EXPECTED_SECTIONS = {
 # output should never contain ACM-only macros.
 FORBIDDEN_OUTPUT_PATTERNS = {
     "ieee": [
-        r"\\ccsdesc",
+        # ACM document class / package
+        r"\\documentclass\[[^\]]*\]\{acmart\}",
+        # ACM-only structural environments
         r"\\begin\{CCSXML\}",
         r"\\begin\{acks\}",
-        r"\\documentclass\[[^\]]*\]\{acmart\}",
+        r"\\ccsdesc",
+        # ACM ceremony / metadata commands (must be stripped by Friday)
+        r"\\setcopyright\b",
+        r"\\copyrightyear\b",
+        r"\\acmYear\b",
         r"\\acmConference\b",
+        r"\\acmBooktitle\b",
+        r"\\acmDOI\b",
+        r"\\acmISBN\b",
+        r"\\acmPrice\b",
+        r"\\acmJournal\b",
+        r"\\acmVolume\b",
+        r"\\acmNumber\b",
+        r"\\acmArticle\b",
+        r"\\acmMonth\b",
+        r"\\acmArticleSeq\b",
+        r"\\acmSubmissionID\b",
+        r"\\authornote\b",
+        r"\\authorsaddresses\b",
+        r"\\received\b",
     ],
     "acm": [
-        r"\\begin\{IEEEkeywords\}",
+        # IEEE document class / package
         r"\\documentclass\[[^\]]*\]\{IEEEtran\}",
+        # IEEE-only structural environments
+        r"\\begin\{IEEEkeywords\}",
+        r"\\begin\{IEEEbiography\}",
+        # IEEE-only macros (must be stripped by April)
         r"\\IEEEPARstart\b",
+        r"\\IEEEauthorblockN\b",
+        r"\\IEEEauthorblockA\b",
+        r"\\IEEEoverridecommandlockouts\b",
+        r"\\IEEEpeerreviewmaketitle\b",
+        r"\\IEEEpubid\b",
+        r"\\IEEEtriggeratref\b",
     ],
 }
 
