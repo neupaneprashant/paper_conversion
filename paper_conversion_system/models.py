@@ -78,6 +78,8 @@ class ValidationSummary:
     template_compliance: str = "unknown"
     citation_compliance: str = "unknown"
     compile_status: str = "not_run"
+    fidelity_score: float | None = None
+    fidelity_details: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 

@@ -11,6 +11,19 @@ from .orchestrator import route_and_run
 from .packaging import create_job_bundle
 
 
+def _load_openclaw():
+    """Return (driver, provider) using stored OAuth tokens, or (None, None) if unavailable."""
+    try:
+        from .openclaw import load_config_from_disk, OpenClawConversionDriver, OpenClawLLMProvider
+        config = load_config_from_disk()
+        if config is None:
+            return None, None
+        return OpenClawConversionDriver(config), OpenClawLLMProvider(config)
+    except Exception as exc:
+        print(f"[OpenClaw] Not available, falling back to local pipeline: {exc}")
+        return None, None
+
+
 def _build_timeline(result: dict) -> list[dict]:
     compile_ok = result.get("validation", {}).get("compile_status") == "success"
     base = [
@@ -65,6 +78,12 @@ def run_job(job_dir: Path) -> None:
             },
         )
 
+    openclaw_driver, openclaw_provider = _load_openclaw()
+    if openclaw_driver:
+        print(f"[OpenClaw] LLM conversion active (OAuth)")
+    else:
+        print(f"[OpenClaw] Using local pipeline (no OAuth tokens found)")
+
     try:
         result = route_and_run(
             source_format=meta["source_format"],
@@ -74,6 +93,8 @@ def run_job(job_dir: Path) -> None:
             job_id=meta["job_id"],
             fidelity_mode=meta.get("fidelity_mode", "preserve"),
             stage_callback=stage_callback,
+            openclaw_driver=openclaw_driver,
+            llm_provider=openclaw_provider,
         )
         stage_callback("package")
         bundle = create_job_bundle(job_dir)

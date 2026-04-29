@@ -23,6 +23,8 @@ def parse_project_to_cpr(input_path: Path, source_format: str) -> CanonicalPaper
         "source_format": source_format,
         "main_tex": str(main_tex),
         "source_root": str(main_tex.parent),
+        "source_latex_expanded": text,
+        "source_preamble": preamble,
         "acknowledgments": _extract_acknowledgments(text),
         "ccs_concepts": _extract_ccs_concepts(text),
         "ccsxml": _extract_ccsxml(text),

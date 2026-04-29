@@ -22,6 +22,7 @@ def render_cpr_to_target(cpr: CanonicalPaperRepresentation, target_format: str, 
     output_dir.mkdir(parents=True, exist_ok=True)
     ingest_mode = str(cpr.metadata.get("ingest_mode", "") or "")
     escape_body = ingest_mode.startswith("pdf")
+    preserved_preamble = _render_preserved_preamble(cpr, target_format, escape_body=escape_body)
     body = _render_body(cpr, target_format, escape_body=escape_body)
     extra_preamble = _render_extra_preamble(cpr, body)
     authors = _render_authors(cpr, target_format)
@@ -30,13 +31,16 @@ def render_cpr_to_target(cpr: CanonicalPaperRepresentation, target_format: str, 
     acknowledgments_block = _render_acknowledgments(cpr, target_format)
     bibliography_block = _render_bibliography(cpr, target_format)
     abstract_text = _escape_latex_specials(cpr.abstract) if escape_body else cpr.abstract
+    documentclass_line = _render_documentclass_line(target_format)
 
     if target_format == "acm":
         tex = ACM_MAIN_TEMPLATE.format(
+            documentclass_line=documentclass_line,
             title=cpr.title,
             authors=authors,
             abstract=abstract_text,
             keywords_block=keywords_block,
+            preserved_preamble=preserved_preamble,
             extra_preamble=extra_preamble,
             body=body + acknowledgments_block,
             extra_frontmatter=extra_frontmatter,
@@ -44,10 +48,12 @@ def render_cpr_to_target(cpr: CanonicalPaperRepresentation, target_format: str, 
         )
     elif target_format == "ieee":
         tex = IEEE_MAIN_TEMPLATE.format(
+            documentclass_line=documentclass_line,
             title=cpr.title,
             authors=authors,
             abstract=abstract_text,
             keywords_block=keywords_block,
+            preserved_preamble=preserved_preamble,
             extra_preamble=extra_preamble,
             body=body + acknowledgments_block,
             extra_frontmatter=extra_frontmatter,
@@ -61,6 +67,62 @@ def render_cpr_to_target(cpr: CanonicalPaperRepresentation, target_format: str, 
     main.write_text(tex, encoding="utf-8")
     refs.write_text(_render_bib_stub(cpr), encoding="utf-8")
     return main
+
+
+def _render_documentclass_line(target_format: str) -> str:
+    if target_format == "acm":
+        return r"\documentclass[sigconf]{acmart}"
+    if target_format == "ieee":
+        return r"\documentclass[conference]{IEEEtran}"
+    raise ValueError(f"Unsupported target format: {target_format}")
+
+
+_DOC_META_STRIP_RE = re.compile(
+    r"\\(?:documentclass|begin\s*\{document\}|end\s*\{document\}|maketitle)\b.*",
+    re.I,
+)
+_FRONTMATTER_STRIP_RE = re.compile(
+    r"\\(?:title|author|date|thanks|IEEEoverridecommandlockouts|IEEEpubid)\b.*",
+    re.I,
+)
+
+
+def _render_preserved_preamble(
+    cpr: CanonicalPaperRepresentation,
+    target_format: str,
+    *,
+    escape_body: bool,
+) -> str:
+    """Best-effort preamble preservation for LaTeX-project inputs.
+
+    For source-LaTeX inputs (not PDF ingest), keeping the original preamble
+    dramatically reduces conversion breakage (custom macros, TikZ libs,
+    class-specific helper packages, etc.). We still strip the source
+    \\documentclass and frontmatter commands to avoid duplicates.
+    """
+    if escape_body:
+        return ""
+    raw = str(cpr.metadata.get("source_preamble", "") or "")
+    if not raw.strip():
+        return ""
+
+    cleaned_lines: list[str] = []
+    for line in raw.splitlines():
+        # Drop source docclass and any stray begin{document}.
+        if _DOC_META_STRIP_RE.match(line.strip()):
+            continue
+        # Drop frontmatter declarations; the target template renders these.
+        if _FRONTMATTER_STRIP_RE.match(line.strip()):
+            continue
+        # Avoid explicitly loading the old class packages.
+        if re.search(r"\\usepackage(?:\[[^\]]*\])?\{[^}]*\b(?:IEEEtran|acmart)\b[^}]*\}", line, re.I):
+            continue
+        cleaned_lines.append(line.rstrip())
+
+    cleaned = "\n".join(cleaned_lines).strip()
+    if not cleaned:
+        return ""
+    return cleaned + "\n"
 
 
 def _render_body(cpr: CanonicalPaperRepresentation, target_format: str, escape_body: bool = False) -> str:
