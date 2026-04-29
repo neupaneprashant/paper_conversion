@@ -422,21 +422,35 @@ def _copy_assets_if_any(source: Path | CanonicalPaperRepresentation, output_dir:
     files, bibliography databases, and other project artifacts so the rendered
     target can still resolve ``\\includegraphics`` and template dependencies.
     ``main.tex`` is always left alone so we don't overwrite the generated output.
+
+    Images are also mirrored at root **only when their basename is unique**
+    across the whole project — if two subdirectories each contain a file named
+    ``img.pdf``, mirroring one would silently overwrite the other and break
+    ``\\includegraphics{img}`` references.  In conflict cases we skip the
+    mirror and rely on ``\\graphicspath`` for resolution instead.
     """
     if not isinstance(source, Path) or not source.exists():
         return
     source_root = source if source.is_dir() else source.parent
-    copied_image_dirs: set[str] = set()
+
+    _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".pdf", ".eps", ".svg"}
+    _SKIP_EXTS = {".aux", ".bbl", ".blg", ".fdb_latexmk", ".fls", ".log", ".out", ".synctex.gz", ".toc"}
+
+    # Pre-scan: build basename → [source files] map to detect conflicts.
+    basename_count: dict[str, int] = {}
+    for child in source_root.rglob("*"):
+        if child.is_file() and child.suffix.lower() in _IMAGE_EXTS:
+            basename_count[child.name] = basename_count.get(child.name, 0) + 1
+    # Only mirror image basenames that appear exactly once in the project.
+    unique_image_basenames: set[str] = {name for name, count in basename_count.items() if count == 1}
+
     mirrored_basenames: set[str] = set()
     for child in source_root.rglob("*"):
         if not child.is_file():
             continue
         if any(part.startswith(".") for part in child.relative_to(source_root).parts):
             continue
-        if child.suffix.lower() in {
-            ".aux", ".bbl", ".blg", ".fdb_latexmk",
-            ".fls", ".log", ".out", ".synctex.gz", ".toc",
-        }:
+        if child.suffix.lower() in _SKIP_EXTS:
             continue
         rel = child.relative_to(source_root)
         if rel == Path("main.tex"):
@@ -444,17 +458,15 @@ def _copy_assets_if_any(source: Path | CanonicalPaperRepresentation, output_dir:
         dest = output_dir / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(child, dest)
-        if child.suffix.lower() in {".png", ".jpg", ".jpeg", ".pdf", ".eps"}:
+        if child.suffix.lower() in _IMAGE_EXTS:
             rel_parent = rel.parent.as_posix()
-            if rel_parent and rel_parent != ".":
-                copied_image_dirs.add(rel_parent)
-            # Mirror by basename at root so \includegraphics{file.png} resolves
-            # when source projects rely on \graphicspath shortcuts.
-            if child.name not in mirrored_basenames:
-                flat_dest = output_dir / child.name
-                if not flat_dest.exists():
-                    shutil.copy2(child, flat_dest)
-                mirrored_basenames.add(child.name)
+            if rel_parent and rel_parent != "." and child.name in unique_image_basenames:
+                # Only mirror images whose basename is unambiguous project-wide.
+                if child.name not in mirrored_basenames:
+                    flat_dest = output_dir / child.name
+                    if not flat_dest.exists():
+                        shutil.copy2(child, flat_dest)
+                    mirrored_basenames.add(child.name)
 
 
 def _ensure_references_bib_alias(

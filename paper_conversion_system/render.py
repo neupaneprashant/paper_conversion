@@ -23,6 +23,7 @@ def render_cpr_to_target(cpr: CanonicalPaperRepresentation, target_format: str, 
     ingest_mode = str(cpr.metadata.get("ingest_mode", "") or "")
     escape_body = ingest_mode.startswith("pdf")
     body = _render_body(cpr, target_format, escape_body=escape_body)
+    extra_preamble = _render_extra_preamble(cpr, body)
     authors = _render_authors(cpr, target_format)
     keywords_block = _render_keywords(cpr, target_format)
     extra_frontmatter = _render_extra_frontmatter(cpr, target_format)
@@ -36,6 +37,7 @@ def render_cpr_to_target(cpr: CanonicalPaperRepresentation, target_format: str, 
             authors=authors,
             abstract=abstract_text,
             keywords_block=keywords_block,
+            extra_preamble=extra_preamble,
             body=body + acknowledgments_block,
             extra_frontmatter=extra_frontmatter,
             bibliography_block=bibliography_block,
@@ -46,6 +48,7 @@ def render_cpr_to_target(cpr: CanonicalPaperRepresentation, target_format: str, 
             authors=authors,
             abstract=abstract_text,
             keywords_block=keywords_block,
+            extra_preamble=extra_preamble,
             body=body + acknowledgments_block,
             extra_frontmatter=extra_frontmatter,
             bibliography_block=bibliography_block,
@@ -94,6 +97,7 @@ def _render_body(cpr: CanonicalPaperRepresentation, target_format: str, escape_b
     remaining_figures = list(cpr.figures)
     remaining_tables = list(cpr.tables)
     remaining_equations = list(equation_artifacts)
+    preserve_float_context = not escape_body
     for section in cpr.sections:
         title = _map_section_title(section.title, target_format)
         if title.lower() == "references":
@@ -149,6 +153,8 @@ def _render_body(cpr: CanonicalPaperRepresentation, target_format: str, escape_b
             content = _format_pdf_section_text(content)
         content = _inject_artifacts(content, inline_artifacts, escape_body=escape_body)
         section_chunk = [f"\\section{{{title}}}\n{content}\n"]
+        if preserve_float_context:
+            section_chunk.append("\\FloatBarrier")
         chunks.append("\n".join(section_chunk))
 
         rendered_figure_labels = {fig.label for fig in section_figures}
@@ -165,6 +171,100 @@ def _render_body(cpr: CanonicalPaperRepresentation, target_format: str, escape_b
     if remaining_equations:
         chunks.append(_render_equation_artifacts(remaining_equations))
     return "\n".join(chunks)
+
+
+def _render_extra_preamble(cpr: CanonicalPaperRepresentation, body: str) -> str:
+    text = body or ""
+    packages: list[str] = []
+
+    def add(pkg_line: str) -> None:
+        if pkg_line not in packages:
+            packages.append(pkg_line)
+
+    # ── Packages inferred from body content ─────────────────────────────
+    if "\\begin{subfigure}" in text or "\\end{subfigure}" in text:
+        add(r"\usepackage{subcaption}")
+    if "\\subfloat" in text:
+        add(r"\usepackage{subfig}")
+    if "\\begin{minipage}" in text and "\\includegraphics" in text:
+        # side-by-side minipages need caption support outside floats
+        add(r"\usepackage{caption}")
+    if "\\begin{tikzpicture}" in text or "\\end{tikzpicture}" in text or "\\begin{scope}" in text:
+        add(r"\usepackage{tikz}")
+    if "\\begin{venndiagram" in text:
+        add(r"\usepackage{venndiagram}")
+    if "\\begin{enumerate*}" in text or "\\end{enumerate*}" in text:
+        add(r"\usepackage[inline]{enumitem}")
+    if "\\toprule" in text or "\\midrule" in text or "\\bottomrule" in text:
+        add(r"\usepackage{booktabs}")
+    if "\\multirow" in text:
+        add(r"\usepackage{multirow}")
+    if "\\multicolumn" in text:
+        add(r"\usepackage{multicol}")
+    if "\\captionof{" in text:
+        add(r"\usepackage{caption}")
+    if "\\Circle" in text or "\\CIRCLE" in text:
+        add(r"\usepackage{wasysym}")
+    if "\\balance" in text:
+        add(r"\usepackage{balance}")
+    if "\\begin{lstlisting}" in text or "\\lstinputlisting" in text:
+        add(r"\usepackage{listings}")
+    if "\\begin{algorithm}" in text or "\\begin{algorithmic}" in text:
+        add(r"\usepackage{algorithm}")
+        add(r"\usepackage{algpseudocode}")
+    if "\\xspace" in text:
+        add(r"\usepackage{xspace}")
+    if "\\url{" in text or "\\href{" in text:
+        add(r"\usepackage{hyperref}")
+    if "\\textcolor{" in text or "\\colorbox{" in text or "\\definecolor{" in text:
+        add(r"\usepackage{xcolor}")
+
+    # ── Packages forwarded from source preamble ──────────────────────────
+    # Forward compatible source packages that are not already pulled in by
+    # body-content detection above and are safe across template boundaries.
+    _SAFE_TO_FORWARD = {
+        "algorithm", "algpseudocode", "algorithmicx",
+        "listings", "listingsutf8",
+        "xcolor", "color",
+        "hyperref", "url",
+        "xspace",
+        "booktabs", "multirow", "multicol",
+        "subcaption", "subfig", "caption",
+        "tikz", "pgfplots",
+        "enumitem",
+        "wasysym", "amssymb", "amsthm",
+        "natbib", "cite",
+        "tabularx", "longtable", "array",
+        "rotating", "pdflscape",
+        "minted", "verbatim",
+        "cleveref",
+    }
+    for pkg in (cpr.metadata.get("source_packages") or []):
+        if pkg in _SAFE_TO_FORWARD:
+            candidate = f"\\usepackage{{{pkg}}}"
+            add(candidate)
+
+    # ── graphicspath ─────────────────────────────────────────────────────
+    graphic_roots = cpr.metadata.get("graphics_roots", []) or []
+    root_entries: list[str] = []
+    for root in graphic_roots:
+        clean = str(root or "").strip().replace("\\", "/")
+        if not clean:
+            continue
+        if not clean.endswith("/"):
+            clean += "/"
+        root_entries.append(f"{{{clean}}}")
+    if root_entries:
+        add(r"\graphicspath{" + "".join(root_entries) + "}")
+
+    # ── Custom macros from source preamble ───────────────────────────────
+    custom_macros = cpr.metadata.get("custom_macros") or []
+    if custom_macros:
+        packages.append("% Custom macros preserved from source")
+        for macro in custom_macros:
+            add(macro)
+
+    return ("\n".join(packages) + "\n") if packages else ""
 
 
 # Characters that must be escaped when inserting raw PDF text into LaTeX body
@@ -360,21 +460,30 @@ def _map_section_title(title: str, target_format: str) -> str:
 
 def _render_figures(figures) -> str:
     chunks: list[str] = []
-    for fig in figures[:3]:
+    for fig in figures:
         asset_block = "% Figure asset unavailable from PDF ingest"
         if fig.path:
             asset_block = f"\\includegraphics[width=\\linewidth]{{{fig.path}}}"
         chunks.append(
-            f"\\begin{{figure}}[{fig.placement}]\n\\centering\n{asset_block}\n\\caption{{{fig.caption}}}\n\\label{{{fig.label}}}\n\\end{{figure}}"
+            f"\\begin{{figure}}[{fig.placement}]\n"
+            f"\\centering\n"
+            f"{asset_block}\n"
+            f"\\caption{{{fig.caption}}}\n"
+            f"\\label{{{fig.label}}}\n"
+            f"\\end{{figure}}"
         )
     return "\n\n".join(chunks)
 
 
 def _render_tables(tables) -> str:
     chunks: list[str] = []
-    for table in tables[:4]:
+    for table in tables:
         chunks.append(
-            f"\\begin{{table}}[{table.placement}]\n\\caption{{{table.caption}}}\n\\label{{{table.label}}}\n{table.latex}\n\\end{{table}}"
+            f"\\begin{{table}}[{table.placement}]\n"
+            f"\\caption{{{table.caption}}}\n"
+            f"\\label{{{table.label}}}\n"
+            f"{table.latex}\n"
+            f"\\end{{table}}"
         )
     return "\n\n".join(chunks)
 
@@ -479,6 +588,11 @@ def _remove_artifact_snippets(content: str, snippets: list[str]) -> str:
         key=len,
         reverse=True,
     )
+    # No artifact snippets means no scrub pass is needed. Returning the
+    # original content preserves author-authored line structure inside LaTeX
+    # environments (e.g., figure blocks containing '%' comments).
+    if not unique_snippets:
+        return content
 
     def transform(paragraph: str) -> str:
         working = _normalise_artifact_text(paragraph or "")

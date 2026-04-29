@@ -17,6 +17,7 @@ def parse_project_to_cpr(input_path: Path, source_format: str) -> CanonicalPaper
     authors_raw = _match_one(text, r"\\author\{(.+?)\}")
     authors = [a.strip() for a in re.split(r"\\and|,", authors_raw) if a.strip()] if authors_raw else []
     keywords = _extract_keywords(text)
+    preamble = _extract_preamble(text)
 
     metadata = {
         "source_format": source_format,
@@ -25,6 +26,8 @@ def parse_project_to_cpr(input_path: Path, source_format: str) -> CanonicalPaper
         "acknowledgments": _extract_acknowledgments(text),
         "ccs_concepts": _extract_ccs_concepts(text),
         "ccsxml": _extract_ccsxml(text),
+        "custom_macros": _extract_custom_macros(preamble),
+        "source_packages": _extract_source_packages(preamble),
     }
 
     return CanonicalPaperRepresentation(
@@ -49,7 +52,7 @@ def _detect_main_tex(input_path: Path) -> Path:
             f"Input path not found or is not a directory: {input_path}"
         )
     
-    # Search for .tex files in directory
+    # Search for .tex files in directory root first
     mains = list(input_path.glob("*.tex"))
     for candidate in mains:
         try:
@@ -63,14 +66,17 @@ def _detect_main_tex(input_path: Path) -> Path:
         # Return first .tex file found
         return mains[0]
     
-    # No .tex files found - provide helpful error
+    # Fall back to nested project layouts, common in downloaded archives.
     tex_files = list(input_path.rglob("*.tex"))
+    for candidate in tex_files:
+        try:
+            text = candidate.read_text(encoding="utf-8", errors="ignore")
+            if "\\begin{document}" in text:
+                return candidate
+        except Exception:
+            continue
     if tex_files:
-        raise FileNotFoundError(
-            f"Could not find a main .tex file in {input_path}.\n"
-            f"Found {len(tex_files)} .tex file(s) in subdirectories. "
-            f"Please ensure a main .tex file exists in the root of your LaTeX project."
-        )
+        return tex_files[0]
     
     raise FileNotFoundError(
         f"No .tex files found in input project: {input_path}\n"
@@ -209,3 +215,65 @@ def _extract_ccs_concepts(text: str) -> list[str]:
 def _extract_ccsxml(text: str) -> str:
     m = re.search(r"\\begin\{CCSXML\}(.*?)\\end\{CCSXML\}", text, re.S)
     return m.group(1).strip() if m else ""
+
+
+def _extract_preamble(text: str) -> str:
+    """Return everything before \\begin{document}."""
+    idx = text.find("\\begin{document}")
+    return text[:idx] if idx != -1 else ""
+
+
+def _extract_custom_macros(preamble: str) -> list[str]:
+    """Extract custom macro definitions from the source preamble.
+
+    Captures single-line \\newcommand, \\renewcommand, \\providecommand,
+    and \\def declarations so they survive the CPR round-trip and can be
+    re-emitted in the target preamble.  Multi-line macro bodies are not
+    captured here to avoid fragile brace-counting.
+    """
+    macros: list[str] = []
+    for line in preamble.splitlines():
+        stripped = line.strip()
+        if stripped.startswith((
+            "\\newcommand",
+            "\\renewcommand",
+            "\\providecommand",
+            "\\def\\",
+        )):
+            # Skip macros that redefine core formatting primitives — those
+            # clash with the target template's own definitions.
+            skip_prefixes = (
+                "\\newcommand{\\section",
+                "\\newcommand{\\subsection",
+                "\\renewcommand{\\section",
+                "\\renewcommand{\\subsection",
+                "\\renewcommand{\\abstract",
+            )
+            if any(stripped.startswith(p) for p in skip_prefixes):
+                continue
+            macros.append(stripped)
+    return macros
+
+
+_USEPACKAGE_RE = re.compile(r"\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}")
+
+
+def _extract_source_packages(preamble: str) -> list[str]:
+    """Return package names declared in the source preamble.
+
+    Used by the renderer to selectively forward compatible packages (e.g.
+    algorithm, listings, xcolor) that are not part of the base template.
+    """
+    _SKIP_PACKAGES = {
+        # Template-level packages already present in both base templates.
+        "graphicx", "amsmath", "amssymb", "float", "placeins",
+        # Class-specific; clash with the target class.
+        "IEEEtran", "acmart",
+    }
+    packages: list[str] = []
+    for m in _USEPACKAGE_RE.finditer(preamble):
+        for pkg in m.group(1).split(","):
+            name = pkg.strip()
+            if name and name not in _SKIP_PACKAGES and name not in packages:
+                packages.append(name)
+    return packages
