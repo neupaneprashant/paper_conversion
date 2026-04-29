@@ -1,128 +1,103 @@
 from __future__ import annotations
 
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import os
-from pathlib import Path
-import re
-import signal
-import subprocess
-import string
-import sys
-import threading
-import time
-from urllib.parse import parse_qs, urlparse
-import cgi
+import io
 import json
 import mimetypes
+import os
+import re
+import signal
+import string
+import subprocess
+import sys
+import tempfile
+import threading
+import time
 import traceback
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from .models import new_job_id
 from .job_store import copy_input, ensure_job_dirs, merge_job_meta, now_ts, read_job_meta, write_job_meta
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+# ---------------------------------------------------------------------------
+# Multipart form-data parser (replaces the deprecated `cgi` module)
+# ---------------------------------------------------------------------------
+
+def _parse_content_type(raw: str) -> tuple[str, dict[str, str]]:
+    """Parse a Content-Type header value into (media_type, {param: value})."""
+    if not raw:
+        return "", {}
+    parts = [p.strip() for p in raw.split(";")]
+    ctype = parts[0].lower()
+    params: dict[str, str] = {}
+    for part in parts[1:]:
+        if "=" in part:
+            k, _, v = part.partition("=")
+            params[k.strip().lower()] = v.strip().strip('"')
+    return ctype, params
+
+
+class _FormField:
+    """One field parsed from a multipart/form-data body."""
+    def __init__(self, data: bytes, filename: str | None = None) -> None:
+        self.file = io.BytesIO(data)
+        self.filename = filename
+        self._data = data
+
+    def getvalue(self) -> str:
+        return self._data.decode("utf-8", errors="replace")
+
+
+def _parse_multipart(rfile, content_length: int, boundary: str) -> dict[str, _FormField]:
+    """Parse multipart/form-data and return {field_name: _FormField}."""
+    if not boundary:
+        return {}
+    body = rfile.read(content_length)
+    delim = ("--" + boundary).encode("ascii", errors="replace")
+    fields: dict[str, _FormField] = {}
+    for chunk in body.split(delim):
+        chunk = chunk.lstrip(b"\r\n")
+        if not chunk or chunk[:2] == b"--":
+            continue
+        sep = chunk.find(b"\r\n\r\n")
+        if sep == -1:
+            continue
+        raw_headers = chunk[:sep].decode("utf-8", errors="replace")
+        part_body = chunk[sep + 4:]
+        if part_body.endswith(b"\r\n"):
+            part_body = part_body[:-2]
+        name: str | None = None
+        filename: str | None = None
+        for line in raw_headers.splitlines():
+            if line.lower().startswith("content-disposition:"):
+                cd = line.split(":", 1)[1].strip()
+                for param in cd.split(";"):
+                    param = param.strip()
+                    if param.lower().startswith("name="):
+                        name = param[5:].strip('"')
+                    elif param.lower().startswith("filename="):
+                        filename = param[9:].strip('"')
+        if name is not None:
+            fields[name] = _FormField(part_body, filename)
+    return fields
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
 JOBS_ROOT = ROOT / "jobs"
 UI_ROOT = ROOT / "ui"
 BROWSE_HOME = Path.home()
-DEFAULT_JOB_TIMEOUT_SECONDS = int(os.environ.get("PAPER_CONVERSION_JOB_TIMEOUT_SECONDS", "180"))
+DEFAULT_JOB_TIMEOUT_SECONDS = int(os.environ.get("PAPER_CONVERSION_JOB_TIMEOUT_SECONDS", "600"))
 ACTIVE_JOB_STATUSES = {"queued", "running"}
 TERMINAL_JOB_STATUSES = {"success", "failed"}
-
-
-def _default_browse_path() -> Path:
-    for candidate in (BROWSE_HOME / "Desktop", BROWSE_HOME / "Downloads", BROWSE_HOME):
-        if candidate.exists() and candidate.is_dir():
-            return candidate.resolve()
-    return ROOT.resolve()
-
-
-def _iter_drive_roots() -> list[Path]:
-    if os.name != "nt":
-        return [Path("/")]
-    drives: list[Path] = []
-    for letter in string.ascii_uppercase:
-        drive = Path(f"{letter}:\\")
-        try:
-            if drive.exists():
-                drives.append(drive)
-        except OSError:
-            continue
-    return drives
-
-
-def _browse_shortcuts() -> list[dict]:
-    shortcuts: list[dict] = []
-    seen: set[str] = set()
-
-    def add_shortcut(label: str, path: Path) -> None:
-        try:
-            resolved = path.resolve()
-        except OSError:
-            return
-        if not resolved.exists() or not resolved.is_dir():
-            return
-        key = str(resolved)
-        if key in seen:
-            return
-        seen.add(key)
-        shortcuts.append({"label": label, "path": key})
-
-    add_shortcut("Home", BROWSE_HOME)
-    add_shortcut("Desktop", BROWSE_HOME / "Desktop")
-    add_shortcut("Downloads", BROWSE_HOME / "Downloads")
-    add_shortcut("Documents", BROWSE_HOME / "Documents")
-    add_shortcut("Workspace", ROOT)
-
-    for drive in _iter_drive_roots():
-        label = drive.drive or str(drive)
-        add_shortcut(label, drive)
-
-    return shortcuts
-
-
-def _resolve_browse_target(raw_path: str) -> Path:
-    raw = (raw_path or "").strip().strip('"').strip("'")
-    if not raw:
-        return _default_browse_path()
-    if re.fullmatch(r"[A-Za-z]:", raw):
-        raw = raw + "\\"
-
-    candidate = Path(raw).expanduser()
-    if candidate.is_absolute():
-        target = candidate
-    else:
-        target = ROOT / candidate
-
-    target = target.resolve()
-    if target.exists() and target.is_file():
-        target = target.parent
-    return target
-
-
-def _browse_items(target: Path) -> list[dict]:
-    items: list[dict] = []
-    for entry in sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
-        try:
-            is_dir = entry.is_dir()
-            items.append({
-                "name": entry.name,
-                "path": str(entry.resolve()),
-                "is_dir": is_dir,
-                "is_file": entry.is_file(),
-                "extension": entry.suffix.lower(),
-            })
-        except (PermissionError, OSError):
-            continue
-    return items
-
-
-def _build_browse_payload(target: Path) -> dict:
-    return {
-        "current_path": str(target),
-        "parent_path": str(target.parent) if target.parent != target else None,
-        "items": _browse_items(target),
-        "shortcuts": _browse_shortcuts(),
-    }
 
 
 class JobManager:
@@ -391,9 +366,9 @@ JOB_MANAGER = JobManager()
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        """Override to log all messages to stdout"""
+        """Override to log all messages to stdout."""
         print(f"[{self.client_address[0]}] {format % args}")
-    
+
     def _json(self, data: dict | list, status: int = 200) -> None:
         body = json.dumps(data, indent=2).encode("utf-8")
         self.send_response(status)
@@ -471,25 +446,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
                 return
-            if path == "/api/browse":
-                # File browser API: list directory contents
-                try:
-                    raw_path = parse_qs(parsed.query).get("path", [""])[0]
-                    target = _resolve_browse_target(raw_path)
-                    if not target.exists():
-                        return self._json({"error": "Path not found"}, 404)
-                    if not target.is_dir():
-                        return self._json({"error": "Path is not a directory"}, 400)
-
-                    try:
-                        payload = _build_browse_payload(target)
-                    except (PermissionError, OSError) as e:
-                        return self._json({"error": f"Cannot read directory: {str(e)}"}, 403)
-
-                    return self._json(payload)
-                except Exception as e:
-                    return self._json({"error": f"Browse failed: {str(e)}"}, 400)
-            
             if path.startswith("/api/jobs/"):
                 job_id = path.split("/")[-1]
                 data = JOB_MANAGER.get_job(job_id)
@@ -508,41 +464,109 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path != "/api/jobs":
                 return self._text("Not Found", 404)
 
-            ctype, pdict = cgi.parse_header(self.headers.get("Content-Type", ""))
-            if ctype == "application/json":
+            raw_ctype = self.headers.get("Content-Type", "")
+            print(f"[POST] Raw Content-Type: {raw_ctype}")
+            ctype, pdict = _parse_content_type(raw_ctype)
+            print(f"[POST] Parsed ctype: {ctype}")
+
+            # Handle multipart file upload (secure)
+            if ctype == "multipart/form-data":
+                try:
+                    content_length = int(self.headers.get('Content-Length', '0'))
+                    form = _parse_multipart(self.rfile, content_length, pdict.get('boundary', ''))
+                    print(f"[POST] Form keys: {list(form.keys())}")
+
+                    # Check if file was uploaded
+                    if "file" not in form:
+                        return self._json({"error": "No file uploaded"}, 400)
+
+                    file_item = form["file"]
+                    if not file_item.filename:
+                        return self._json({"error": "No file selected"}, 400)
+
+                    # Extract formats from form
+                    source_format = (form["source_format"].getvalue() if "source_format" in form else "").strip().lower()
+                    target_format = (form["target_format"].getvalue() if "target_format" in form else "").strip().lower()
+
+                    if not source_format or not target_format:
+                        return self._json({"error": "Missing source_format or target_format"}, 400)
+
+                    if source_format not in ["ieee", "acm"] or target_format not in ["ieee", "acm"]:
+                        return self._json({"error": "Invalid format. Must be 'ieee' or 'acm'"}, 400)
+
+                    # Secure filename: extract just the filename, no path traversal
+                    original_filename = Path(file_item.filename).name
+
+                    # Validate filename (no path traversal)
+                    if ".." in original_filename or "/" in original_filename or "\\" in original_filename:
+                        return self._json({"error": "Invalid filename"}, 400)
+
+                    # Validate file extension
+                    suffix = Path(original_filename).suffix.lower()
+                    if suffix not in ['.pdf', '.tex', '.zip']:
+                        return self._json({"error": f"Unsupported file type: {suffix}. Please upload .pdf, .tex, or .zip files."}, 400)
+
+                    # Create isolated temp directory for this job
+                    job_id = str(uuid.uuid4())
+                    temp_base = Path(tempfile.gettempdir()) / "paper_conversion"
+                    temp_base.mkdir(parents=True, exist_ok=True)
+                    job_temp_dir = temp_base / job_id
+                    job_temp_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Save uploaded file to temp directory
+                    input_path = job_temp_dir / original_filename
+                    with open(input_path, 'wb') as f:
+                        f.write(file_item.file.read())
+
+                    # Create job with temp file
+                    meta = JOB_MANAGER.create_job(
+                        source_format=source_format,
+                        target_format=target_format,
+                        input_path=str(input_path),
+                        fidelity_mode="preserve",
+                    )
+                    return self._json(meta, 201)
+
+                except Exception as e:
+                    print(f"ERROR in file upload: {str(e)}")
+                    traceback.print_exc()
+                    return self._json({"error": f"File upload failed: {str(e)}"}, 500)
+
+            # Legacy JSON support (for backwards compatibility, but less secure)
+            elif ctype == "application/json":
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                    
+
                     # Validate and clean required fields
                     source_format = payload.get("source_format", "").strip().lower()
                     target_format = payload.get("target_format", "").strip().lower()
                     input_path = payload.get("input_path", "").strip()
                     fidelity_mode = payload.get("fidelity_mode", "preserve").strip().lower() or "preserve"
-                    
+
                     # Strip quotes from path (from drag-drop or copy-paste)
                     if input_path.startswith('"') and input_path.endswith('"'):
                         input_path = input_path[1:-1]
                     if input_path.startswith("'") and input_path.endswith("'"):
                         input_path = input_path[1:-1]
-                    
+
                     if not input_path or not source_format or not target_format:
                         return self._json({"error": "Missing required fields: input_path, source_format, target_format"}, 400)
-                    
+
                     input_file = Path(input_path)
                     if not input_file.exists():
                         return self._json({"error": f"Input path not found: {input_path}"}, 404)
-                    
+
                     # Accept both files and directories
                     if not (input_file.is_dir() or input_file.is_file()):
                         return self._json({"error": f"Input path must be a file or folder: {input_path}"}, 400)
-                    
+
                     # Validate file type if it's a file
                     if input_file.is_file():
                         suffix = input_file.suffix.lower()
-                        if suffix not in ['.pdf', '.tex', '.bib']:
-                            return self._json({"error": f"Unsupported file type {suffix}. Please provide a PDF file or LaTeX project folder."}, 400)
-                    
+                        if suffix not in ['.pdf', '.tex', '.bib', '.zip']:
+                            return self._json({"error": f"Unsupported file type {suffix}. Please provide a PDF file, LaTeX project folder, or .zip archive."}, 400)
+
                     meta = JOB_MANAGER.create_job(
                         source_format=source_format,
                         target_format=target_format,
@@ -555,7 +579,8 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._json({"error": f"Job creation failed: {str(e)}"}, 500)
 
-            return self._json({"error": "unsupported_content_type"}, 400)
+            else:
+                return self._json({"error": "unsupported_content_type. Use multipart/form-data or application/json"}, 400)
         except Exception as e:
             print(f"ERROR in do_POST: {str(e)}")
             traceback.print_exc()
