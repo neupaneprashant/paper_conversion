@@ -349,7 +349,12 @@ def _extract_custom_macros(preamble: str) -> list[str]:
             else:
                 break
 
-        macro_text = " ".join(preamble[best_pos:end].split())
+        # Strip LaTeX line comments (%…\n) BEFORE collapsing whitespace.
+        # Multi-line macro bodies use '%' as a line-continuation token; if we
+        # collapse to a single line first, every '%' becomes a comment that
+        # kills the rest of the definition (e.g. "\kern…" is silently dropped).
+        raw_slice = re.sub(r"%[^\n]*", "", preamble[best_pos:end])
+        macro_text = " ".join(raw_slice.split())
         if (
             macro_text
             and not any(macro_text.startswith(p) for p in _MACRO_SKIP_PREFIXES)
