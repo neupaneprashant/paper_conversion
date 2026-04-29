@@ -191,6 +191,20 @@ def _render_extra_preamble(cpr: CanonicalPaperRepresentation, body: str) -> str:
         add(r"\usepackage{caption}")
     if "\\begin{tikzpicture}" in text or "\\end{tikzpicture}" in text or "\\begin{scope}" in text:
         add(r"\usepackage{tikz}")
+        # Forward common TikZ libraries that complex flowcharts depend on.
+        # Detection is conservative: each library is only added when the
+        # corresponding library-specific syntax appears in the body.
+        if "arrow" in text.lower() or "->" in text or "->>" in text:
+            add(r"\usetikzlibrary{arrows.meta,arrows}")
+        if "\\node[" in text and any(s in text for s in ("rectangle", "rounded corners", "draw=", "fill=")):
+            add(r"\usetikzlibrary{shapes,shapes.geometric,positioning,fit,calc,backgrounds}")
+        if "\\matrix" in text or "matrix of" in text:
+            add(r"\usetikzlibrary{matrix}")
+        if "decoration" in text:
+            add(r"\usetikzlibrary{decorations.pathmorphing,decorations.markings}")
+        if "\\pgfplotsset" in text or "\\begin{axis}" in text:
+            add(r"\usepackage{pgfplots}")
+            add(r"\pgfplotsset{compat=1.18}")
     if "\\begin{venndiagram" in text:
         add(r"\usepackage{venndiagram}")
     if "\\begin{enumerate*}" in text or "\\end{enumerate*}" in text:
@@ -286,6 +300,10 @@ def _render_extra_preamble(cpr: CanonicalPaperRepresentation, body: str) -> str:
     # xspace is required by the fallbacks above.
     if any(fb in packages for fb in _TEX_ENGINE_FALLBACKS):
         add(r"\usepackage{xspace}")
+
+    # ── TikZ / pgfplots libraries forwarded from source ──────────────────
+    for lib_line in (cpr.metadata.get("tikz_libraries") or []):
+        add(lib_line)
 
     # ── graphicspath ─────────────────────────────────────────────────────
     graphic_roots = cpr.metadata.get("graphics_roots", []) or []

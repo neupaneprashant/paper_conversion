@@ -28,6 +28,7 @@ def parse_project_to_cpr(input_path: Path, source_format: str) -> CanonicalPaper
         "ccsxml": _extract_ccsxml(text),
         "custom_macros": _extract_custom_macros(preamble),
         "source_packages": _extract_source_packages(preamble),
+        "tikz_libraries": _extract_tikz_libraries(preamble),
     }
 
     return CanonicalPaperRepresentation(
@@ -236,6 +237,27 @@ _MACRO_SKIP_PREFIXES = (
     "\\renewcommand{\\footnotetextcopyrightpermission",
     "\\renewcommand{\\familydefault",
     "\\renewcommand{\\baselinestretch",
+    "\\renewcommand{\\maketitle",
+    "\\renewcommand{\\title",
+    "\\renewcommand{\\author",
+    "\\renewcommand{\\bibname",
+    "\\setcounter{secnumdepth",
+    "\\setcounter{tocdepth",
+    "\\setcounter{page",
+    "\\setlength{\\textwidth",
+    "\\setlength{\\textheight",
+    "\\setlength{\\columnwidth",
+    "\\setlength{\\columnsep",
+    "\\setlength{\\oddsidemargin",
+    "\\setlength{\\evensidemargin",
+    "\\setlength{\\topmargin",
+    "\\setlength{\\headheight",
+    "\\setlength{\\headsep",
+    "\\setlength{\\parindent",
+    "\\setlength{\\parskip",
+    "\\setlength{\\footskip",
+    "\\setlength{\\marginparwidth",
+    "\\setlength{\\marginparsep",
 )
 
 # Macro definition triggers we scan for
@@ -243,7 +265,17 @@ _MACRO_TRIGGERS = (
     "\\newcommand",
     "\\renewcommand",
     "\\providecommand",
+    "\\DeclareRobustCommand",
+    "\\DeclarePairedDelimiter",
+    "\\newenvironment",
+    "\\renewenvironment",
+    "\\newtheorem",
+    "\\newcounter",
+    "\\setcounter",
+    "\\newlength",
+    "\\setlength",
     "\\def\\",
+    "\\let\\",
 )
 
 
@@ -304,20 +336,44 @@ def _extract_custom_macros(preamble: str) -> list[str]:
             continue
 
         # Walk forward from the trigger to collect the complete definition.
-        # Grammar (simplified):
-        #   \newcommand[*]  {cmd} [opt-count] [opt-default] {body}
-        #   \def\cmd        {body}
+        # Grammar covered (* = optional star suffix, [...] = optional bracket arg):
+        #   \newcommand[*]            {cmd} [n] [default] {body}
+        #   \renewcommand[*]          {cmd} [n] [default] {body}
+        #   \providecommand[*]        {cmd} [n] [default] {body}
+        #   \DeclareRobustCommand[*]  {cmd} [n] [default] {body}
+        #   \def\cmd                  {body}
+        #   \let\cmd \target               (no braces; bare command names)
+        #   \newenvironment           {name} [n] [default] {begin} {end}
+        #   \renewenvironment         {name} [n] [default] {begin} {end}
+        #   \newtheorem               {env} [counter] {display} [reset-by]
+        #   \newcounter               {name} [reset-by]
+        #   \setcounter               {name} {value}
+        #   \newlength                {\dim}
+        #   \setlength                {\dim} {value}
         j = best_pos + len(best_trigger)
-        # Skip optional '*' after \newcommand/\renewcommand/\providecommand
+        # Skip optional '*' after macro-defining commands
         if j < n and preamble[j] == "*":
             j += 1
 
-        # Collect all brace/bracket groups that make up the definition.
-        # We collect AT MOST 4 groups (cmd, [n], [default], body).
+        # Special path for \let\cmd\target (or \let\cmd=\target).
+        if best_trigger == "\\let\\":
+            # j currently points at the first letter of the source-cmd name.
+            head = re.match(r"[A-Za-z@]+\*?\s*=?\s*\\[A-Za-z@]+\*?", preamble[j:])
+            if head:
+                end = j + head.end()
+            else:
+                end = j  # malformed; keep nothing
+            macro_text = " ".join(preamble[best_pos:end].split()) if end > best_pos else ""
+            if macro_text and len(macro_text) <= 200 and macro_text not in macros:
+                macros.append(macro_text)
+            i = end if end > best_pos else best_pos + 1
+            continue
+
+        # Standard path: collect brace and bracket groups (up to 4).
         groups_collected = 0
         end = j
-        while j < n and groups_collected < 4:
-            # Skip inter-group whitespace (including newlines for multi-line defs)
+        while j < n and groups_collected < 5:
+            # Skip inter-group whitespace including newlines for multi-line defs.
             while j < n and preamble[j] in " \t\n\r":
                 j += 1
             if j >= n:
@@ -331,7 +387,6 @@ def _extract_custom_macros(preamble: str) -> list[str]:
                 groups_collected += 1
                 j = new_j
             elif ch == "[":
-                # Optional argument — scan to matching ']'
                 close = preamble.find("]", j + 1)
                 if close == -1:
                     break
@@ -369,6 +424,25 @@ def _extract_custom_macros(preamble: str) -> list[str]:
 
 
 _USEPACKAGE_RE = re.compile(r"\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}")
+_TIKZLIB_RE = re.compile(r"\\usetikzlibrary\{[^}]+\}")
+_PGFLIB_RE = re.compile(r"\\usepgfplotslibrary\{[^}]+\}")
+
+
+def _extract_tikz_libraries(preamble: str) -> list[str]:
+    """Return TikZ/pgfplots library declarations found in the preamble.
+
+    These are forwarded verbatim to the output preamble whenever the source
+    paper uses TikZ — without them, complex flowcharts (Figure 4 in the
+    sample paper, for instance) render with overlapping or missing nodes.
+    """
+    libs: list[str] = []
+    for m in _TIKZLIB_RE.finditer(preamble):
+        if m.group(0) not in libs:
+            libs.append(m.group(0))
+    for m in _PGFLIB_RE.finditer(preamble):
+        if m.group(0) not in libs:
+            libs.append(m.group(0))
+    return libs
 
 
 def _extract_source_packages(preamble: str) -> list[str]:
