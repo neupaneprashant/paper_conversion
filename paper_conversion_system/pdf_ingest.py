@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import re
+import shutil
+import subprocess
 import fitz
 
 from .models import CanonicalPaperRepresentation, Figure, Section, Reference, Table
@@ -58,6 +61,9 @@ def parse_pdf_to_cpr(
     keywords = _extract_keywords(text)
     sections = _extract_sections(text)
     references = _extract_reference_placeholders(text)
+    structured_refs, structured_parser = _try_structured_reference_parse(pdf_path, text)
+    if structured_refs:
+        references = structured_refs
 
     metadata.update({
         "source_format": source_format_hint or _guess_format(text),
@@ -69,6 +75,7 @@ def parse_pdf_to_cpr(
         "document_type_meta": doc_meta,
         "fidelity_mode": fidelity_mode,
         "bibliography_mode": "thebibliography" if fidelity_mode == "preserve" else "bibtex",
+        "reference_parser": structured_parser or "regex",
         "extracted_figure_assets": extracted_images,
         "figure_section_map": figure_section_map,
         "figure_anchor_map": figure_anchor_map,
@@ -1393,6 +1400,89 @@ def _extract_reference_placeholders(text: str) -> list[Reference]:
         seen.add(key)
         references.append(Reference(key=key, raw=f"placeholder for {key}"))
     return references
+
+
+def _extract_reference_block(text: str) -> str:
+    m = re.search(r"(?:^|\n)(?:REFERENCES|BIBLIOGRAPHY|WORKS\s+CITED)\s*(.*)$", text, re.I | re.S)
+    return m.group(1).strip() if m else ""
+
+
+def _try_structured_reference_parse(pdf_path: Path, text: str) -> tuple[list[Reference], str | None]:
+    """Best-effort structured parser integration for PDF references.
+
+    Priority:
+    1. `anystyle` CLI (if installed)
+    2. `grobid_client` CLI (if installed)
+
+    Falls back silently when unavailable.
+    """
+    ref_block = _extract_reference_block(text)
+    if not ref_block:
+        return [], None
+
+    refs = _try_anystyle_parse(ref_block)
+    if refs:
+        return refs, "anystyle"
+
+    refs = _try_grobid_parse(pdf_path)
+    if refs:
+        return refs, "grobid_client"
+
+    return [], None
+
+
+def _try_anystyle_parse(ref_block: str) -> list[Reference]:
+    exe = shutil.which("anystyle")
+    if not exe:
+        return []
+    try:
+        proc = subprocess.run(
+            [exe, "parse", "--stdout"],
+            input=ref_block,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return []
+        parsed = json.loads(proc.stdout)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    refs: list[Reference] = []
+    for idx, item in enumerate(parsed, start=1):
+        if not isinstance(item, dict):
+            continue
+        raw_text = item.get("raw") or item.get("title")
+        if isinstance(raw_text, list):
+            raw_text = " ".join(str(x) for x in raw_text)
+        raw_value = str(raw_text or "").strip()
+        if not raw_value:
+            continue
+        refs.append(Reference(key=f"ref{idx}", raw=raw_value))
+    return refs
+
+
+def _try_grobid_parse(pdf_path: Path) -> list[Reference]:
+    exe = shutil.which("grobid_client")
+    if not exe:
+        return []
+    # Requires a running GROBID server + configured client; keep optional.
+    try:
+        proc = subprocess.run(
+            [exe, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return []
+    except Exception:
+        return []
+    return []
 
 
 def _strip_section_noise(content: str) -> str:

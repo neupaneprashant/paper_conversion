@@ -1028,10 +1028,15 @@ def _render_bib_stub(cpr: CanonicalPaperRepresentation) -> str:
     PDF-ingested references, we fall through to a structured guesser that tries
     to recover author/title/year/venue from common IEEE/ACM reference shapes.
     """
+    source_bib = str(cpr.metadata.get("source_bib_text", "") or "").strip()
+    if source_bib:
+        return source_bib + ("\n" if not source_bib.endswith("\n") else "")
+
     if not cpr.references:
         return "% No references extracted\n"
     entries: list[str] = []
     seen_keys: set[str] = set()
+    malformed_keys: list[str] = []
     for ref in cpr.references:
         if ref.key in seen_keys:
             continue
@@ -1041,10 +1046,16 @@ def _render_bib_stub(cpr: CanonicalPaperRepresentation) -> str:
             entries.append(raw)
             continue
         entry_type, fields = _guess_bibtex_fields(ref.key, ref.raw)
+        if len(str(fields.get("title", "") or "")) > 200:
+            malformed_keys.append(ref.key)
         field_text = "\n".join(
             [f"  {k}={{{_sanitise_bib_value(v)}}}," for k, v in fields.items() if v]
         )
         entries.append(f"@{entry_type}{{{ref.key},\n{field_text}\n}}")
+    if malformed_keys:
+        cpr.metadata.setdefault("reference_warnings", []).append(
+            f"Likely malformed references (title > 200 chars): {', '.join(malformed_keys[:8])}"
+        )
     return "\n\n".join(entries) + "\n"
 
 

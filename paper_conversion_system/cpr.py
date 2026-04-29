@@ -19,12 +19,16 @@ def parse_project_to_cpr(input_path: Path, source_format: str) -> CanonicalPaper
     keywords = _extract_keywords(text)
     preamble = _extract_preamble(text)
 
+    source_bib = _load_source_bibliography(input_path)
+
     metadata = {
         "source_format": source_format,
         "main_tex": str(main_tex),
         "source_root": str(main_tex.parent),
         "source_latex_expanded": text,
         "source_preamble": preamble,
+        "source_has_real_bib": bool(source_bib),
+        "source_bib_text": source_bib,
         "acknowledgments": _extract_acknowledgments(text),
         "ccs_concepts": _extract_ccs_concepts(text),
         "ccsxml": _extract_ccsxml(text),
@@ -161,6 +165,29 @@ def _extract_references(input_path: Path) -> list[Reference]:
                 continue
             refs.append(Reference(key=key_match.group(1).strip(), raw=entry.strip()))
     return refs
+
+
+def _load_source_bibliography(input_path: Path) -> str:
+    """Return the richest .bib content from source, if available.
+
+    Preference order:
+    1. references.bib
+    2. largest .bib file in project root
+    """
+    bibs = list(input_path.glob("*.bib")) if input_path.is_dir() else list(input_path.parent.glob("*.bib"))
+    if not bibs:
+        return ""
+    preferred = None
+    for bib in bibs:
+        if bib.name.lower() == "references.bib":
+            preferred = bib
+            break
+    if preferred is None:
+        preferred = max(bibs, key=lambda p: p.stat().st_size if p.exists() else 0)
+    try:
+        return preferred.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
 
 
 def _iter_bib_entries(raw: str):

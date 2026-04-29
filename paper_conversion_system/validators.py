@@ -95,6 +95,9 @@ def validate_project(project_dir: Path, cpr: CanonicalPaperRepresentation, targe
 
     # L2 - citation/bibliography presence.
     summary.citation_compliance = _check_citation_compliance(text, cpr, summary)
+    for warning in cpr.metadata.get("reference_warnings", []) or []:
+        summary.warnings.append(str(warning))
+    _warn_malformed_references(cpr, summary)
 
     # L2 - forbidden (leaked) patterns for the target template.
     for pattern in FORBIDDEN_OUTPUT_PATTERNS.get(target_format, []):
@@ -192,3 +195,15 @@ def _check_citation_compliance(text: str, cpr: CanonicalPaperRepresentation, sum
             )
 
     return "pass"
+
+
+def _warn_malformed_references(cpr: CanonicalPaperRepresentation, summary: ValidationSummary) -> None:
+    suspicious: list[str] = []
+    for ref in cpr.references:
+        raw = str(ref.raw or "")
+        if len(raw) > 500:
+            suspicious.append(ref.key)
+    if suspicious:
+        summary.warnings.append(
+            f"Reference entries may be malformed or over-merged (raw length > 500): {suspicious[:8]}"
+        )
