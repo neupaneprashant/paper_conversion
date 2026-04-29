@@ -218,10 +218,12 @@ def _render_extra_preamble(cpr: CanonicalPaperRepresentation, body: str) -> str:
         add(r"\usepackage{hyperref}")
     if "\\textcolor{" in text or "\\colorbox{" in text or "\\definecolor{" in text:
         add(r"\usepackage{xcolor}")
+    if "\\hologo{" in text:
+        add(r"\usepackage{hologo}")
+    if "\\textsf{" in text or "\\texttt{" in text or "\\textsc{" in text:
+        add(r"\usepackage{fontenc}")
 
     # ── Packages forwarded from source preamble ──────────────────────────
-    # Forward compatible source packages that are not already pulled in by
-    # body-content detection above and are safe across template boundaries.
     _SAFE_TO_FORWARD = {
         "algorithm", "algpseudocode", "algorithmicx",
         "listings", "listingsutf8",
@@ -238,11 +240,52 @@ def _render_extra_preamble(cpr: CanonicalPaperRepresentation, body: str) -> str:
         "rotating", "pdflscape",
         "minted", "verbatim",
         "cleveref",
+        "hologo", "metalogo",
+        "relsize", "scalefnt",
     }
     for pkg in (cpr.metadata.get("source_packages") or []):
         if pkg in _SAFE_TO_FORWARD:
             candidate = f"\\usepackage{{{pkg}}}"
             add(candidate)
+
+    # ── TeX engine macro fallbacks ────────────────────────────────────────
+    # Papers about TeX ecosystems (and many others) use macros like
+    # \XeLaTeX, \LuaLaTeX, \pdflatex, \latexmk, \BibTeX, etc. defined in
+    # their preamble. If CPR extraction missed them (e.g. defined in a .sty
+    # file via \usepackage, or using \hologo internally), these commands
+    # produce blank output or fatal errors. \providecommand is safe: it
+    # only takes effect when the command is NOT already defined, so captured
+    # custom macros from the source always take precedence.
+    _TEX_ENGINE_FALLBACKS = [
+        r"\providecommand{\pdfTeX}{pdf\TeX\xspace}",
+        r"\providecommand{\pdflatex}{pdf\LaTeX\xspace}",
+        r"\providecommand{\pdftex}{pdf\TeX\xspace}",
+        r"\providecommand{\XeTeX}{Xe\TeX\xspace}",
+        r"\providecommand{\xetex}{Xe\TeX\xspace}",
+        r"\providecommand{\XeLaTeX}{Xe\LaTeX\xspace}",
+        r"\providecommand{\xelatex}{Xe\LaTeX\xspace}",
+        r"\providecommand{\LuaTeX}{Lua\TeX\xspace}",
+        r"\providecommand{\luatex}{Lua\TeX\xspace}",
+        r"\providecommand{\LuaLaTeX}{Lua\LaTeX\xspace}",
+        r"\providecommand{\lualatex}{Lua\LaTeX\xspace}",
+        r"\providecommand{\BibTeX}{\textsc{Bib}\TeX\xspace}",
+        r"\providecommand{\bibtex}{\textsc{Bib}\TeX\xspace}",
+        r"\providecommand{\latexmk}{\texttt{latexmk}\xspace}",
+        r"\providecommand{\LaTeXe}{\LaTeX{}2e\xspace}",
+        r"\providecommand{\texlive}{\TeX{} Live\xspace}",
+        r"\providecommand{\TeXLive}{\TeX{} Live\xspace}",
+        r"\providecommand{\MiKTeX}{MiK\TeX\xspace}",
+        r"\providecommand{\TikZ}{Ti\textit{k}Z\xspace}",
+    ]
+    # Only inject fallbacks whose macro name actually appears in the body.
+    for fallback in _TEX_ENGINE_FALLBACKS:
+        # Extract \commandName from the \providecommand{\commandName}{...}
+        m = re.match(r"\\providecommand\{(\\[A-Za-z]+)\}", fallback)
+        if m and m.group(1) in text:
+            add(fallback)
+    # xspace is required by the fallbacks above.
+    if any(fb in packages for fb in _TEX_ENGINE_FALLBACKS):
+        add(r"\usepackage{xspace}")
 
     # ── graphicspath ─────────────────────────────────────────────────────
     graphic_roots = cpr.metadata.get("graphics_roots", []) or []
