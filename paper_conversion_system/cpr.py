@@ -223,35 +223,143 @@ def _extract_preamble(text: str) -> str:
     return text[:idx] if idx != -1 else ""
 
 
-def _extract_custom_macros(preamble: str) -> list[str]:
-    """Extract custom macro definitions from the source preamble.
+# Macro definitions that redefine core formatting primitives clash with the
+# target template — skip them.
+_MACRO_SKIP_PREFIXES = (
+    "\\newcommand{\\section",
+    "\\newcommand{\\subsection",
+    "\\newcommand{\\subsubsection",
+    "\\renewcommand{\\section",
+    "\\renewcommand{\\subsection",
+    "\\renewcommand{\\abstract",
+    "\\renewcommand{\\thefootnote",
+    "\\renewcommand{\\footnotetextcopyrightpermission",
+    "\\renewcommand{\\familydefault",
+    "\\renewcommand{\\baselinestretch",
+)
 
-    Captures single-line \\newcommand, \\renewcommand, \\providecommand,
-    and \\def declarations so they survive the CPR round-trip and can be
-    re-emitted in the target preamble.  Multi-line macro bodies are not
-    captured here to avoid fragile brace-counting.
+# Macro definition triggers we scan for
+_MACRO_TRIGGERS = (
+    "\\newcommand",
+    "\\renewcommand",
+    "\\providecommand",
+    "\\def\\",
+)
+
+
+def _brace_scan(text: str, start: int) -> int:
+    """Return the index just past the closing '}' that balances text[start] == '{'.
+
+    Returns ``start`` unchanged if text[start] is not '{' or no balance found.
+    """
+    if start >= len(text) or text[start] != "{":
+        return start
+    depth = 0
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            i += 2  # skip escaped character
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return start  # unbalanced — return unchanged
+
+
+def _extract_custom_macros(preamble: str) -> list[str]:
+    """Extract macro definitions from the source preamble using brace-balanced parsing.
+
+    Handles multi-line bodies — common for TeX logo macros such as XeLaTeX or
+    LuaLaTeX — by scanning forward with brace counting rather than splitting on
+    newlines.  Each extracted definition is normalised to a single line so it can
+    be safely re-emitted in the target preamble without white-space artefacts.
     """
     macros: list[str] = []
-    for line in preamble.splitlines():
-        stripped = line.strip()
-        if stripped.startswith((
-            "\\newcommand",
-            "\\renewcommand",
-            "\\providecommand",
-            "\\def\\",
-        )):
-            # Skip macros that redefine core formatting primitives — those
-            # clash with the target template's own definitions.
-            skip_prefixes = (
-                "\\newcommand{\\section",
-                "\\newcommand{\\subsection",
-                "\\renewcommand{\\section",
-                "\\renewcommand{\\subsection",
-                "\\renewcommand{\\abstract",
-            )
-            if any(stripped.startswith(p) for p in skip_prefixes):
-                continue
-            macros.append(stripped)
+    i = 0
+    n = len(preamble)
+
+    while i < n:
+        # Locate the next macro-trigger starting from position i.
+        best_pos = n
+        best_trigger = ""
+        for trigger in _MACRO_TRIGGERS:
+            pos = preamble.find(trigger, i)
+            if pos != -1 and pos < best_pos:
+                best_pos = pos
+                best_trigger = trigger
+
+        if best_pos == n:
+            break  # no more triggers
+
+        # Skip triggers that appear inside a comment (% before trigger on same line).
+        line_start = preamble.rfind("\n", 0, best_pos) + 1
+        pre_trigger = preamble[line_start:best_pos]
+        if "%" in pre_trigger:
+            i = best_pos + 1
+            continue
+
+        # Walk forward from the trigger to collect the complete definition.
+        # Grammar (simplified):
+        #   \newcommand[*]  {cmd} [opt-count] [opt-default] {body}
+        #   \def\cmd        {body}
+        j = best_pos + len(best_trigger)
+        # Skip optional '*' after \newcommand/\renewcommand/\providecommand
+        if j < n and preamble[j] == "*":
+            j += 1
+
+        # Collect all brace/bracket groups that make up the definition.
+        # We collect AT MOST 4 groups (cmd, [n], [default], body).
+        groups_collected = 0
+        end = j
+        while j < n and groups_collected < 4:
+            # Skip inter-group whitespace (including newlines for multi-line defs)
+            while j < n and preamble[j] in " \t\n\r":
+                j += 1
+            if j >= n:
+                break
+            ch = preamble[j]
+            if ch == "{":
+                new_j = _brace_scan(preamble, j)
+                if new_j == j:
+                    break  # unbalanced
+                end = new_j
+                groups_collected += 1
+                j = new_j
+            elif ch == "[":
+                # Optional argument — scan to matching ']'
+                close = preamble.find("]", j + 1)
+                if close == -1:
+                    break
+                end = close + 1
+                groups_collected += 1
+                j = end
+            elif ch == "\\" and best_trigger == "\\def\\":
+                # \def\cmd{body}: cmd is a \word, not braced
+                m = re.match(r"\\[A-Za-z@]+\*?", preamble[j:])
+                if m:
+                    j += m.end()
+                    end = j
+                else:
+                    break
+            else:
+                break
+
+        macro_text = " ".join(preamble[best_pos:end].split())
+        if (
+            macro_text
+            and not any(macro_text.startswith(p) for p in _MACRO_SKIP_PREFIXES)
+            and len(macro_text) <= 600
+            and macro_text not in macros
+        ):
+            macros.append(macro_text)
+
+        i = end if end > best_pos else best_pos + 1
+
     return macros
 
 
