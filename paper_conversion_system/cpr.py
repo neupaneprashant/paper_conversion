@@ -308,6 +308,80 @@ _MACRO_TRIGGERS = (
 )
 
 
+def brace_scan(text: str, start: int) -> int:
+    """Return the index just past the closing '}' that balances text[start] == '{'.
+
+    Returns ``start`` unchanged if text[start] is not '{' or no balance found.
+    Public alias of :func:`_brace_scan`; use this when other modules need the
+    shared brace-balanced scanner so we have a single implementation.
+    """
+    return _brace_scan(text, start)
+
+
+def strip_balanced_command(text: str, command: str, arg_count: int) -> tuple[str, int]:
+    """Remove every occurrence of ``command`` plus its [opt] and {arg} groups.
+
+    Walks the source text counting braces so nested groups inside arguments are
+    handled correctly (the regex form ``\\cmd\\{[^}]*\\}`` silently truncates on
+    nested commands).  Returns the modified text and the number of strip
+    operations performed.
+
+    A token-boundary check ensures ``\\acmDOI`` does not match ``\\acmDOIfake``.
+    """
+    out: list[str] = []
+    i = 0
+    count = 0
+    n = len(text)
+    cmd_len = len(command)
+    while i < n:
+        if not text.startswith(command, i):
+            out.append(text[i])
+            i += 1
+            continue
+        next_idx = i + cmd_len
+        if next_idx < n and (text[next_idx].isalpha() or text[next_idx] == "@"):
+            out.append(text[i])
+            i += 1
+            continue
+
+        scan = next_idx
+        while scan < n and text[scan] in " \t":
+            scan += 1
+        # Optional [bracket] argument (e.g. \acmConference[short]{...}{...}{...}).
+        if scan < n and text[scan] == "[":
+            close = text.find("]", scan)
+            if close == -1:
+                out.append(text[i])
+                i += 1
+                continue
+            scan = close + 1
+        consumed = 0
+        ok = True
+        while consumed < arg_count:
+            while scan < n and text[scan] in " \t\n":
+                scan += 1
+            if scan >= n or text[scan] != "{":
+                ok = False
+                break
+            end = brace_scan(text, scan)
+            if end == scan:
+                ok = False
+                break
+            scan = end
+            consumed += 1
+        if not ok:
+            out.append(text[i])
+            i += 1
+            continue
+        while scan < n and text[scan] in " \t":
+            scan += 1
+        if scan < n and text[scan] == "\n":
+            scan += 1
+        count += 1
+        i = scan
+    return "".join(out), count
+
+
 def _brace_scan(text: str, start: int) -> int:
     """Return the index just past the closing '}' that balances text[start] == '{'.
 

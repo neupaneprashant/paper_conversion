@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Callable
 
-from .cpr import parse_project_to_cpr
+from .cpr import brace_scan, parse_project_to_cpr, strip_balanced_command
 from .models import CanonicalPaperRepresentation, ConversionReport
 from .normalization import normalize_cpr_for_target
 from .render import render_cpr_to_target
@@ -36,10 +36,18 @@ _ACM_MARKERS_RE = re.compile(
     r"\\begin\{CCSXML\}"
     r"|\\ccsdesc"
     r"|\\acmConference"
+    r"|\\acmBooktitle"
     r"|\\acmDOI"
     r"|\\setcopyright"
     r"|\\acmISBN"
     r"|\\acmPrice"
+    r"|\\acmJournal"
+    r"|\\acmVolume"
+    r"|\\acmNumber"
+    r"|\\acmArticle"
+    r"|\\acmYear"
+    r"|\\authornote"
+    r"|\\authorsaddresses"
     r"|\\received",
     re.IGNORECASE,
 )
@@ -73,6 +81,7 @@ class _ConversionAgent:
     _wrong_format_re: re.Pattern | None = None
     # Regex for venue-specific command markers used in format detection.
     _wrong_markers_re: re.Pattern | None = None
+    _active_notes: list[str]
 
     def convert(
         self,
@@ -93,6 +102,8 @@ class _ConversionAgent:
         """
         pre_warnings: list[str] = []
 
+        self._active_notes = []
+
         if isinstance(source, CanonicalPaperRepresentation):
             # PDF ingest or alternate parsers hand us CPR directly.
             cpr = source
@@ -101,6 +112,8 @@ class _ConversionAgent:
             # Run raw-source guardrails *before* spending time on a full parse.
             pre_warnings.extend(self._check_source_format(source))
             cpr = parse_project_to_cpr(source, self.source_format)
+
+        self._agent_preprocess(cpr, source)
 
         if stage_callback is not None:
             stage_callback("normalize")
@@ -126,8 +139,8 @@ class _ConversionAgent:
             ],
             changed_sections=[s.title for s in cpr.sections],
             unresolved_items=self._collect_unresolved(cpr),
-            warnings=pre_warnings + list(norm["warnings"]),
-            assumptions=list(norm["assumptions"]),
+            warnings=pre_warnings + list(norm["warnings"]) + list(self._active_notes),
+            assumptions=list(norm["assumptions"]) + list(cpr.metadata.get("agent_assumptions", []) or []),
             target_template_profile=self.target_template_profile,
             source_format=self.source_format,
             target_format=self.target_format,
@@ -197,6 +210,14 @@ class _ConversionAgent:
         """Return items that need human review after conversion."""
         return []
 
+    def _agent_preprocess(
+        self,
+        cpr: CanonicalPaperRepresentation,
+        source: Path | CanonicalPaperRepresentation,
+    ) -> None:
+        """Agent-specific preprocessing before shared normalization."""
+        return
+
 
 # ---------------------------------------------------------------------------
 # April — IEEE → ACM
@@ -220,6 +241,29 @@ class April(_ConversionAgent):
     _expected_class_re = _IEEE_DOCCLASS_RE
     _wrong_format_re = _ACM_DOCCLASS_RE
     _wrong_markers_re = _ACM_MARKERS_RE
+
+    def _agent_preprocess(
+        self,
+        cpr: CanonicalPaperRepresentation,
+        source: Path | CanonicalPaperRepresentation,
+    ) -> None:
+        # Prefer source LaTeX for IEEEauthorblock parsing.
+        source_latex = str(cpr.metadata.get("source_latex_expanded", "") or "")
+        if not source_latex:
+            return
+        profiles = _parse_ieee_author_profiles(source_latex)
+        if not profiles:
+            return
+        cpr.metadata["author_profiles"] = profiles
+        cpr.authors = [p["name"] for p in profiles if p.get("name")]
+        cpr.metadata["emails"] = [p.get("email", "") for p in profiles if p.get("email")]
+        cpr.metadata["affiliations"] = [p.get("institution", "") for p in profiles if p.get("institution")]
+        cpr.metadata.setdefault("agent_assumptions", []).append(
+            "April parsed IEEEauthorblockN/A into ACM author/affiliation/email profiles."
+        )
+        self._active_notes.append(
+            "April: translated IEEEauthorblockN/A frontmatter into structured ACM author profiles."
+        )
 
     def _collect_unresolved(self, cpr: CanonicalPaperRepresentation) -> list[str]:
         unresolved: list[str] = []
@@ -328,6 +372,29 @@ class Friday(_ConversionAgent):
     _expected_class_re = _ACM_DOCCLASS_RE
     _wrong_format_re = _IEEE_DOCCLASS_RE
     _wrong_markers_re = _IEEE_MARKERS_RE
+
+    def _agent_preprocess(
+        self,
+        cpr: CanonicalPaperRepresentation,
+        source: Path | CanonicalPaperRepresentation,
+    ) -> None:
+        # Strip ACM ceremony from preserved preamble to avoid leaking into IEEE output.
+        preamble = str(cpr.metadata.get("source_preamble", "") or "")
+        if preamble:
+            cleaned, removed = _strip_acm_ceremony_macros(preamble)
+            if removed:
+                cpr.metadata["source_preamble"] = cleaned
+                cpr.metadata["acm_ceremony_removed"] = removed
+                self._active_notes.append(
+                    f"Friday: stripped ACM ceremony macros from source preamble ({', '.join(removed)})."
+                )
+        # Promote conference metadata for IEEE header rendering.
+        conf = str(cpr.metadata.get("conference", "") or "").strip()
+        if conf:
+            cpr.metadata["ieee_conference_header"] = conf
+            cpr.metadata.setdefault("agent_assumptions", []).append(
+                "Friday mapped ACM conference metadata into IEEE conference header hint."
+            )
 
     def _collect_unresolved(self, cpr: CanonicalPaperRepresentation) -> list[str]:
         unresolved: list[str] = []
@@ -544,3 +611,128 @@ def _find_main_tex(source: Path) -> Path | None:
         except Exception:
             continue
     return next(source.rglob("*.tex"), None)
+
+
+_IEEE_AUTHOR_N_TRIGGER = re.compile(r"\\IEEEauthorblockN\s*\{", re.I)
+_IEEE_AUTHOR_A_TRIGGER = re.compile(r"\\IEEEauthorblockA\s*\{", re.I)
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_TEXTIT_RE = re.compile(r"\\textit\{([^}]*)\}")
+
+
+def _scan_brace_groups(text: str, trigger: re.Pattern[str]) -> list[str]:
+    """Yield brace-balanced bodies for every match of *trigger* in *text*.
+
+    The trigger regex MUST end at the opening ``{`` of the group it points to.
+    Bodies may contain nested commands like ``\\textit{...}`` or ``\\href{...}``;
+    the regex-only ``[^}]*`` form trips on those.
+    """
+    groups: list[str] = []
+    pos = 0
+    while pos < len(text):
+        m = trigger.search(text, pos)
+        if m is None:
+            break
+        open_idx = m.end() - 1  # the '{' character itself
+        end = brace_scan(text, open_idx)
+        if end == open_idx:
+            # Unbalanced — bail out cleanly so we don't infinite-loop.
+            break
+        groups.append(text[open_idx + 1: end - 1])
+        pos = end
+    return groups
+
+
+def _parse_ieee_author_profiles(latex: str) -> list[dict[str, str]]:
+    """Parse IEEEauthorblockN/A groups into per-author profile dictionaries."""
+    names = [g.strip() for g in _scan_brace_groups(latex, _IEEE_AUTHOR_N_TRIGGER)]
+    affs = [g.strip() for g in _scan_brace_groups(latex, _IEEE_AUTHOR_A_TRIGGER)]
+    if not names or not affs:
+        return []
+
+    groups = min(len(names), len(affs))
+    profiles: list[dict[str, str]] = []
+    for idx in range(groups):
+        raw_names = _split_names(names[idx])
+        aff_block = affs[idx]
+        clean_aff = _clean_affiliation_block(aff_block)
+        emails = _EMAIL_RE.findall(aff_block)
+        for i, name in enumerate(raw_names):
+            profile = {
+                "name": name,
+                "department": "",
+                "institution": clean_aff,
+                "city": "",
+                "state": "",
+                "country": "",
+                "email": emails[i] if i < len(emails) else (emails[0] if emails else ""),
+            }
+            profiles.append(profile)
+    return profiles
+
+
+def _split_names(raw: str) -> list[str]:
+    # IEEE blocks may use commas and/or \and.
+    chunks = re.split(r"\\and|,", raw)
+    return [" ".join(c.split()) for c in chunks if c.strip()]
+
+
+def _clean_affiliation_block(text: str) -> str:
+    cleaned = _TEXTIT_RE.sub(r"\1", text or "")
+    cleaned = re.sub(r"\\\\", ", ", cleaned)
+    cleaned = _EMAIL_RE.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,")
+    return cleaned
+
+
+# ACM ceremony / metadata macros that must NOT leak into IEEE output.
+# Each entry is (label, command, arg_count). Optional bracket arguments like
+# ``\acmConference[short]{...}{...}{...}`` are stripped via the prefix scan.
+_ACM_CEREMONY_MACROS: list[tuple[str, str, int]] = [
+    # Copyright / licensing ceremony
+    ("setcopyright",       r"\setcopyright",       1),
+    ("copyrightyear",      r"\copyrightyear",      1),
+    ("acmYear",            r"\acmYear",            1),
+    # Conference / venue
+    ("acmConference",      r"\acmConference",      3),
+    ("acmBooktitle",       r"\acmBooktitle",       1),
+    # Identifiers
+    ("acmDOI",             r"\acmDOI",             1),
+    ("acmISBN",            r"\acmISBN",            1),
+    ("acmPrice",           r"\acmPrice",           1),
+    # Journal-mode metadata (acmart journal templates)
+    ("acmJournal",         r"\acmJournal",         1),
+    ("acmVolume",          r"\acmVolume",          1),
+    ("acmNumber",          r"\acmNumber",          1),
+    ("acmArticle",         r"\acmArticle",         1),
+    ("acmMonth",           r"\acmMonth",           1),
+    ("acmArticleSeq",      r"\acmArticleSeq",      1),
+    ("acmSubmissionID",    r"\acmSubmissionID",    1),
+    # Editorial / review state
+    ("received",           r"\received",           1),
+    ("editor",             r"\editor",             1),
+    ("authornote",         r"\authornote",         1),
+    ("authorsaddresses",   r"\authorsaddresses",   1),
+]
+
+
+def _strip_acm_ceremony_macros(text: str) -> tuple[str, list[str]]:
+    """Strip ACM-only ceremony commands using brace-balanced scanning.
+
+    The previous regex-only approach (``\\cmd\\{[^}]*\\}``) silently failed when
+    a metadata argument contained nested commands such as
+    ``\\acmDOI{\\href{...}{...}}`` or ``\\acmConference[short]{The Foo'25 \\& Bar
+    Conference}{...}{...}``.  Delegates to the shared brace-aware command
+    scanner in :mod:`cpr` so nested groups are respected.
+    """
+    cleaned = text
+    removed: list[str] = []
+    for label, command, arg_count in _ACM_CEREMONY_MACROS:
+        new_cleaned, count = strip_balanced_command(cleaned, command, arg_count)
+        if count:
+            removed.append(label)
+            cleaned = new_cleaned
+    return cleaned, removed
+
+
+# Backwards-compat alias for tests/legacy callers that imported the private name.
+_strip_balanced_command = strip_balanced_command

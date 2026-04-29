@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+from .cpr import strip_balanced_command
 from .models import CanonicalPaperRepresentation
 from .templates import ACM_MAIN_TEMPLATE, IEEE_MAIN_TEMPLATE
 
@@ -86,6 +87,37 @@ _FRONTMATTER_STRIP_RE = re.compile(
     re.I,
 )
 
+# Frontmatter commands stripped from the preserved preamble before re-emission.
+# (label, command, arg_count). Brace-balanced scanning so multi-line
+# ``\title{Some\\very long\\title}`` blocks don't leak orphan lines into the
+# target preamble.
+_FRONTMATTER_STRIP_COMMANDS: tuple[tuple[str, str, int], ...] = (
+    ("title",     r"\title",    1),
+    ("author",    r"\author",   1),
+    ("date",      r"\date",     1),
+    ("thanks",    r"\thanks",   1),
+    ("IEEEpubid", r"\IEEEpubid", 1),
+)
+_DOC_META_STRIP_COMMANDS: tuple[tuple[str, str, int], ...] = (
+    ("documentclass", r"\documentclass", 1),
+    ("maketitle",     r"\maketitle",     0),
+    ("IEEEoverridecommandlockouts", r"\IEEEoverridecommandlockouts", 0),
+)
+
+
+def _strip_preamble_frontmatter(raw: str) -> str:
+    """Remove docclass/frontmatter commands with brace-balanced scanning.
+
+    The previous line-by-line filter dropped only the line starting the command
+    and left the remaining lines of multi-line declarations dangling in the
+    output preamble.  This walks the source so the entire balanced argument
+    list is removed.
+    """
+    cleaned = raw
+    for _label, command, arg_count in _DOC_META_STRIP_COMMANDS + _FRONTMATTER_STRIP_COMMANDS:
+        cleaned, _ = strip_balanced_command(cleaned, command, arg_count)
+    return cleaned
+
 
 def _render_preserved_preamble(
     cpr: CanonicalPaperRepresentation,
@@ -106,16 +138,22 @@ def _render_preserved_preamble(
     if not raw.strip():
         return ""
 
+    # Step 1: strip frontmatter and docclass commands using brace-balanced scan
+    # so multi-line bodies don't leave orphaned trailing lines.
+    raw = _strip_preamble_frontmatter(raw)
+
     cleaned_lines: list[str] = []
     for line in raw.splitlines():
-        # Drop source docclass and any stray begin{document}.
-        if _DOC_META_STRIP_RE.match(line.strip()):
-            continue
-        # Drop frontmatter declarations; the target template renders these.
-        if _FRONTMATTER_STRIP_RE.match(line.strip()):
+        stripped = line.strip()
+        # Drop any stray begin/end{document} markers.
+        if stripped.startswith("\\begin{document}") or stripped.startswith("\\end{document}"):
             continue
         # Avoid explicitly loading the old class packages.
-        if re.search(r"\\usepackage(?:\[[^\]]*\])?\{[^}]*\b(?:IEEEtran|acmart)\b[^}]*\}", line, re.I):
+        if re.search(
+            r"\\usepackage(?:\[[^\]]*\])?\{[^}]*\b(?:IEEEtran|acmart)\b[^}]*\}",
+            line,
+            re.I,
+        ):
             continue
         cleaned_lines.append(line.rstrip())
 
@@ -550,6 +588,16 @@ def _render_extra_frontmatter(cpr: CanonicalPaperRepresentation, target_format: 
             chunks.append(f"\\begin{{CCSXML}}\n{ccsxml}\n\\end{{CCSXML}}")
         for concept in ccs_concepts:
             chunks.append(f"\\ccsdesc{{{concept}}}")
+        return "\n".join(chunks)
+    if target_format == "ieee":
+        conference = str(
+            cpr.metadata.get("ieee_conference_header")
+            or cpr.metadata.get("conference")
+            or ""
+        ).strip()
+        chunks: list[str] = [r"\IEEEoverridecommandlockouts"]
+        if conference:
+            chunks.append(f"% Conference: {_escape_frontmatter_text(conference)}")
         return "\n".join(chunks)
     return ""
 
