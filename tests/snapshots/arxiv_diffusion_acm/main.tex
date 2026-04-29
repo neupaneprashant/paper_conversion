@@ -1,0 +1,39 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{placeins}
+\usepackage{amsmath}
+\affiliation{\institution{Open Research Lab}\country{USA}}
+\email{jho@example.org}
+
+\graphicspath{{./}}
+
+\begin{document}
+\title{Denoising Diffusion Models in Practice}
+\author{J. Ho}
+\maketitle
+\begin{abstract}
+Diffusion models iteratively denoise random noise into structured samples.
+\end{abstract}
+\begin{IEEEkeywords}
+diffusion models, generative modeling
+\end{IEEEkeywords}
+
+\section{Introduction}
+Likelihood-based generation can be stable and high quality.
+
+\FloatBarrier
+\section{Training}
+The simplified loss is
+\begin{equation}
+\mathcal{L}_{simple}=\mathbb{E}_{t,x,\epsilon}\left[\|\epsilon-\epsilon_\theta(x_t,t)\|_2^2\right].
+\end{equation}
+
+\FloatBarrier
+\section{Conclusion}
+Strong guidance and schedulers improve final fidelity.
+
+\FloatBarrier
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+\end{document}

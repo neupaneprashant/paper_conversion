@@ -1,0 +1,24 @@
+\documentclass[sigconf]{acmart}
+\title{Graph Neural Networks: A Lightweight Survey}
+\author{W. Hamilton}
+\affiliation{\institution{Example University}\country{USA}}
+\email{author@example.edu}
+\begin{document}
+\begin{abstract}
+We summarize message passing networks and common training objectives.
+\end{abstract}
+\keywords{graph neural networks, message passing}
+\maketitle
+\section{Introduction}
+Graph neural models exchange information over local neighborhoods.
+\section{Message Passing}
+At layer $l+1$:
+\begin{equation}
+h_v^{(l+1)}=\phi\left(h_v^{(l)},\square_{u\in\mathcal{N}(v)}\psi(h_v^{(l)},h_u^{(l)})\right).
+\end{equation}
+\section{Conclusion}
+Model design is a balance between expressivity and efficiency.
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+\end{document}
+

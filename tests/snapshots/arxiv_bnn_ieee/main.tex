@@ -1,0 +1,41 @@
+\documentclass[sigconf]{acmart}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{placeins}
+\usepackage{amsmath}
+\usepackage{amsmath}
+
+\graphicspath{{./}}
+
+\begin{document}
+\title{Dropout as Approximate Bayesian Inference}
+\author{Y. Gal}
+\author{Z. Ghahramani}
+\begin{abstract}
+Dropout can be interpreted as approximate variational inference.
+\end{abstract}
+
+\setcopyright{none}
+\settopmatter{printacmref=false, printccs=false}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\maketitle
+\thispagestyle{plain}
+\pagestyle{plain}
+\section{Introduction}
+Uncertainty estimates are critical in high-risk deployments.
+
+\FloatBarrier
+\section{Approximation}
+Predictive mean with Monte Carlo dropout is
+\begin{equation}
+\hat{y}=\frac{1}{T}\sum_{t=1}^{T} f^{\omega_t}(x).
+\end{equation}
+
+\FloatBarrier
+\section{Conclusion}
+The method yields practical uncertainty with minimal overhead.
+
+\FloatBarrier
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+\end{document}

@@ -1,0 +1,27 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\title{Attention Is All You Need for Mini Batches}
+\author{A. Vaswani \and N. Shazeer}
+\begin{document}
+\maketitle
+\begin{abstract}
+We study a compact sequence model that uses only attention blocks.
+\end{abstract}
+\begin{IEEEkeywords}
+transformer, attention, sequence modeling
+\end{IEEEkeywords}
+\section{Introduction}
+Attention-only architectures reduce path length and improve parallelism.
+We evaluate small machine translation tasks and report latency.
+\section{Method}
+Given tokens $x_1,\dots,x_n$, self-attention computes
+\begin{equation}
+\mathrm{Attn}(Q,K,V)=\mathrm{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V.
+\end{equation}
+\section{Conclusion}
+The model remains competitive while reducing engineering complexity.
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+\end{document}
+
