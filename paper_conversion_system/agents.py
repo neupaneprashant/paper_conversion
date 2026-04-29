@@ -670,9 +670,28 @@ def _parse_ieee_author_profiles(latex: str) -> list[dict[str, str]]:
     return profiles
 
 
+_NAME_SEPARATOR_RE = re.compile(
+    # \and / \And as a token (not the start of \android etc.)
+    r"\\[Aa]nd(?![A-Za-z@])"
+    # Explicit line breaks (\\ or \\*).
+    r"|\\\\\*?"
+    # Horizontal-skip separators sometimes used between names.
+    r"|\\q?quad(?![A-Za-z@])"
+    # Comma or semicolon between names.
+    r"|[,;]"
+)
+
+
 def _split_names(raw: str) -> list[str]:
-    # IEEE blocks may use commas and/or \and.
-    chunks = re.split(r"\\and|,", raw)
+    """Split an IEEE author-block name string into individual author names.
+
+    Handles the common separator forms found in real IEEE manuscripts:
+    ``\\and`` (with word boundary so it doesn't match longer commands),
+    ``\\\\`` line breaks, ``\\quad``/``\\qquad`` spacing, plus literal
+    commas and semicolons.  Empty chunks and whitespace-only fragments
+    are dropped.
+    """
+    chunks = _NAME_SEPARATOR_RE.split(raw)
     return [" ".join(c.split()) for c in chunks if c.strip()]
 
 

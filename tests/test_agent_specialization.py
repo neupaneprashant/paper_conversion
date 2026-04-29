@@ -6,6 +6,7 @@ from paper_conversion_system.agents import (
     April,
     Friday,
     _parse_ieee_author_profiles,
+    _split_names,
     _strip_acm_ceremony_macros,
 )
 
@@ -216,6 +217,25 @@ def test_friday_strips_multiline_acm_metadata_from_preserved_preamble(tmp_path: 
     # Multi-line title body must not leave a dangling "York, NY" or "International Conference" line.
     assert "International Conference" not in main_tex
     assert "York, NY" not in main_tex
+
+
+def test_split_names_handles_realistic_ieee_separators() -> None:
+    # \and with word boundary, \\, \quad, and , are all valid separators.
+    cases = [
+        (r"Alice Smith \and Bob Jones", ["Alice Smith", "Bob Jones"]),
+        (r"Alice Smith, Bob Jones; Carol Davis", ["Alice Smith", "Bob Jones", "Carol Davis"]),
+        (r"Alice Smith \\ Bob Jones", ["Alice Smith", "Bob Jones"]),
+        (r"Alice Smith \quad Bob Jones \qquad Carol Davis",
+         ["Alice Smith", "Bob Jones", "Carol Davis"]),
+    ]
+    for raw, expected in cases:
+        assert _split_names(raw) == expected, raw
+
+
+def test_split_names_does_not_match_command_prefix() -> None:
+    # \andersen should not be split on \and — the word-boundary lookahead
+    # protects against false positives.
+    assert _split_names(r"\Andersen \and Bob Jones") == [r"\Andersen", "Bob Jones"]
 
 
 def test_strip_acm_ceremony_handles_journal_metadata() -> None:
