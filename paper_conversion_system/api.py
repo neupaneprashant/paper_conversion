@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -12,7 +13,6 @@ import sys
 import tempfile
 import threading
 import time
-import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,9 +20,11 @@ from urllib.parse import parse_qs, urlparse
 
 from .models import new_job_id
 from .job_store import copy_input, ensure_job_dirs, merge_job_meta, now_ts, read_job_meta, write_job_meta
+from .logging_utils import configure_logging
 
 
 ROOT = Path(__file__).resolve().parent.parent
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +125,43 @@ class JobManager:
         if recover_on_init:
             self.recover_stale_jobs()
 
+    def _build_worker_env(self, job_dir: Path) -> dict[str, str]:
+        """Build a worker environment with a stability-first Windows default.
+
+        Windows Python/extension startup can be fragile under heavily-pruned
+        environments, so full inheritance is the default there unless the user
+        explicitly opts into strict env isolation.
+        """
+        force_inherit = os.environ.get("PAPER_CONVERSION_INHERIT_ENV", "").strip().lower() in {"1", "true", "yes"}
+        strict_env = os.environ.get("PAPER_CONVERSION_STRICT_WORKER_ENV", "").strip().lower() in {"1", "true", "yes"}
+        inherit_by_default = os.name == "nt" and not strict_env
+        if force_inherit or inherit_by_default:
+            env = os.environ.copy()
+        else:
+            keep = {
+                "PATH", "PATHEXT", "COMSPEC", "SYSTEMROOT", "WINDIR",
+                "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+                "LOCALAPPDATA", "APPDATA", "PROGRAMDATA", "OS",
+                "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+                "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION",
+                "PYTHONIOENCODING", "PYTHONUTF8",
+            }
+            env = {k: v for k, v in os.environ.items() if k in keep}
+        # Keep app-specific knobs.
+        for k, v in os.environ.items():
+            if k.startswith("PAPER_CONVERSION_") or k.startswith("OPENCLAW_"):
+                env[k] = v
+        if os.environ.get("PAPER_CONVERSION_RESTRICT_NETWORK", "1").strip().lower() in {"1", "true", "yes"}:
+            env["HTTP_PROXY"] = ""
+            env["HTTPS_PROXY"] = ""
+            env["NO_PROXY"] = "*"
+            env["no_proxy"] = "*"
+        env["PAPER_CONVERSION_JOB_DIR"] = str(job_dir)
+        env["PYTHONPATH"] = str(self.workspace_root)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        env.update(self.worker_env_overrides)
+        return env
+
     def create_job(self, source_format: str, target_format: str, input_path: str, fidelity_mode: str = "preserve") -> dict:
         self.reconcile_jobs()
         job_id = new_job_id()
@@ -134,6 +173,7 @@ class JobManager:
             "job_id": job_id,
             "status": "queued",
             "stage": "queued",
+            "conversion_method": None,
             "source_format": source_format,
             "target_format": target_format,
             "input_path": str(copied),
@@ -239,11 +279,12 @@ class JobManager:
         stderr_path = job_dir / "artifacts" / "worker.stderr.log"
         stdout_handle = stdout_path.open("a", encoding="utf-8")
         stderr_handle = stderr_path.open("a", encoding="utf-8")
-        env = os.environ.copy()
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        env.update(self.worker_env_overrides)
+        env = self._build_worker_env(job_dir)
         started_at = now_ts()
         try:
+            creationflags = 0
+            if os.name == "nt":
+                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
             process = subprocess.Popen(
                 [
                     self.python_executable,
@@ -252,11 +293,13 @@ class JobManager:
                     "--job-dir",
                     str(job_dir),
                 ],
-                cwd=self.workspace_root,
+                cwd=job_dir,
                 stdout=stdout_handle,
                 stderr=stderr_handle,
                 env=env,
+                creationflags=creationflags,
             )
+            logger.info("worker_launched job_id=%s pid=%s", job_id, process.pid)
         except Exception as exc:
             stdout_handle.close()
             stderr_handle.close()
@@ -367,7 +410,7 @@ JOB_MANAGER = JobManager()
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         """Override to log all messages to stdout."""
-        print(f"[{self.client_address[0]}] {format % args}")
+        logger.info("[%s] %s", self.client_address[0], format % args)
 
     def _json(self, data: dict | list, status: int = 200) -> None:
         body = json.dumps(data, indent=2).encode("utf-8")
@@ -384,6 +427,68 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _sse_headers(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+    def _sse_send(self, event: str, data: dict) -> None:
+        payload = json.dumps(data, ensure_ascii=False)
+        self.wfile.write(f"event: {event}\n".encode("utf-8"))
+        self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+        self.wfile.flush()
+
+    def _stream_job_events(self, job_id: str) -> None:
+        """Stream job metadata updates as SSE events.
+
+        The stream pushes the initial job snapshot immediately, then publishes
+        updates whenever `job.json` changes. A heartbeat event is emitted every
+        few seconds to keep proxies and browsers from timing out idle streams.
+        """
+        job_dir = JOB_MANAGER.jobs_root / job_id
+        job_path = job_dir / "job.json"
+        if not job_path.exists():
+            return self._json({"error": "job_not_found"}, 404)
+
+        self._sse_headers()
+        JOB_MANAGER.reconcile_jobs()
+
+        last_blob = ""
+        last_heartbeat = 0.0
+        heartbeat_interval = 5.0
+        while True:
+            try:
+                JOB_MANAGER.reconcile_jobs()
+                if not job_path.exists():
+                    self._sse_send("error", {"error": "job_not_found"})
+                    return
+
+                blob = job_path.read_text(encoding="utf-8")
+                if blob != last_blob:
+                    last_blob = blob
+                    meta = json.loads(blob)
+                    self._sse_send("job", meta)
+                    if meta.get("status") in TERMINAL_JOB_STATUSES:
+                        self._sse_send("done", {"job_id": job_id, "status": meta.get("status")})
+                        return
+
+                now = time.time()
+                if now - last_heartbeat >= heartbeat_interval:
+                    self._sse_send("heartbeat", {"ts": now})
+                    last_heartbeat = now
+                time.sleep(0.75)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except Exception as exc:
+                try:
+                    self._sse_send("error", {"error": str(exc)})
+                except Exception:
+                    pass
+                return
 
     def do_GET(self) -> None:
         try:
@@ -408,6 +513,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(JOB_MANAGER.health())
             if path == "/api/jobs":
                 return self._json(JOB_MANAGER.list_jobs())
+            event_match = re.match(r"^/api/jobs/([^/]+)/events/?$", path)
+            if event_match:
+                job_id = event_match.group(1)
+                return self._stream_job_events(job_id)
             if path.startswith("/api/jobs/") and path.endswith("/download"):
                 parts = path.strip("/").split("/")
                 job_id = parts[2]
@@ -447,6 +556,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
                 return
             if path.startswith("/api/jobs/"):
+                parts = [p for p in path.split("/") if p]
+                if len(parts) >= 4 and parts[-1] == "events":
+                    return self._stream_job_events(parts[-2])
                 job_id = path.split("/")[-1]
                 data = JOB_MANAGER.get_job(job_id)
                 if not data:
@@ -454,8 +566,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(data)
             return self._text("Not Found", 404)
         except Exception as e:
-            print(f"ERROR in do_GET: {str(e)}")
-            traceback.print_exc()
+            logger.exception("ERROR in do_GET: %s", str(e))
             return self._json({"error": f"Server error: {str(e)}"}, 500)
 
     def do_POST(self) -> None:
@@ -465,16 +576,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._text("Not Found", 404)
 
             raw_ctype = self.headers.get("Content-Type", "")
-            print(f"[POST] Raw Content-Type: {raw_ctype}")
+            logger.info("[POST] Raw Content-Type: %s", raw_ctype)
             ctype, pdict = _parse_content_type(raw_ctype)
-            print(f"[POST] Parsed ctype: {ctype}")
+            logger.info("[POST] Parsed ctype: %s", ctype)
 
             # Handle multipart file upload (secure)
             if ctype == "multipart/form-data":
                 try:
                     content_length = int(self.headers.get('Content-Length', '0'))
                     form = _parse_multipart(self.rfile, content_length, pdict.get('boundary', ''))
-                    print(f"[POST] Form keys: {list(form.keys())}")
+                    logger.info("[POST] Form keys: %s", list(form.keys()))
 
                     # Check if file was uploaded
                     if "file" not in form:
@@ -528,8 +639,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(meta, 201)
 
                 except Exception as e:
-                    print(f"ERROR in file upload: {str(e)}")
-                    traceback.print_exc()
+                    logger.exception("ERROR in file upload: %s", str(e))
                     return self._json({"error": f"File upload failed: {str(e)}"}, 500)
 
             # Legacy JSON support (for backwards compatibility, but less secure)
@@ -582,19 +692,29 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 return self._json({"error": "unsupported_content_type. Use multipart/form-data or application/json"}, 400)
         except Exception as e:
-            print(f"ERROR in do_POST: {str(e)}")
-            traceback.print_exc()
+            logger.exception("ERROR in do_POST: %s", str(e))
             return self._json({"error": f"Server error: {str(e)}"}, 500)
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8080) -> None:
+    configure_logging("api")
     JOBS_ROOT.mkdir(parents=True, exist_ok=True)
     JOB_MANAGER.recover_stale_jobs()
     JOB_MANAGER.reconcile_jobs()
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"Academic Paper Converter UI running on http://{host}:{port}")
+    logger.info("Academic Paper Converter UI running on http://%s:%s", host, port)
     server.serve_forever()
 
 
 if __name__ == "__main__":
-    run_server()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Academic Paper Converter API/UI server")
+    parser.add_argument("--host", default=os.environ.get("PAPER_CONVERSION_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PAPER_CONVERSION_PORT", "8080")))
+    parser.add_argument("--log-format", choices=["text", "json"], default=os.environ.get("PAPER_CONVERSION_LOG_FORMAT", "text"))
+    parser.add_argument("--log-level", default=os.environ.get("PAPER_CONVERSION_LOG_LEVEL", "INFO"))
+    args = parser.parse_args()
+    os.environ["PAPER_CONVERSION_LOG_FORMAT"] = args.log_format
+    os.environ["PAPER_CONVERSION_LOG_LEVEL"] = args.log_level
+    run_server(host=args.host, port=args.port)

@@ -30,6 +30,7 @@ import urllib.error
 
 from .models import CanonicalPaperRepresentation, ConversionReport
 from .orchestrator import LLMContextProvider
+from .validators import FORBIDDEN_OUTPUT_PATTERNS
 
 
 # ---------------------------------------------------------------------------
@@ -972,9 +973,12 @@ class OpenClawConversionDriver:
 
         # Strip figure/equation environments before LLM conversion and re-inject
         # after — the LLM reliably drops \includegraphics references it can't verify.
+        preprocessed = _strip_latex_comments(preprocessed)
+        input_image_paths = _extract_includegraphics_paths(preprocessed)
         stripped, injections = _strip_floats_for_llm(preprocessed)
         converted_stripped = agent.convert(stripped)
         converted = _restore_floats_after_llm(converted_stripped, injections)
+        _assert_includegraphics_preserved(input_image_paths, converted)
 
         unresolved = _detect_unresolved(converted, target_fmt)
         report = ConversionReport(
@@ -1250,19 +1254,65 @@ def _restore_floats_after_llm(latex: str, injections: dict[str, str]) -> str:
     return latex
 
 
+_INCLUDEGRAPHICS_RE = re.compile(r"\\includegraphics(?:\s*\[[^\]]*\])?\s*\{([^}]+)\}", re.I)
+
+
+def _strip_latex_comments(latex: str) -> str:
+    """Strip source comments before prompt construction while preserving escaped percent signs."""
+    cleaned_lines: list[str] = []
+    for line in (latex or "").splitlines():
+        cut_at = None
+        for idx, char in enumerate(line):
+            if char != "%":
+                continue
+            slash_count = 0
+            cursor = idx - 1
+            while cursor >= 0 and line[cursor] == "\\":
+                slash_count += 1
+                cursor -= 1
+            if slash_count % 2 == 0:
+                cut_at = idx
+                break
+        cleaned_lines.append(line[:cut_at].rstrip() if cut_at is not None else line)
+    return "\n".join(cleaned_lines)
+
+
+def _extract_includegraphics_paths(latex: str) -> set[str]:
+    return {
+        _normalize_graphics_path(match)
+        for match in _INCLUDEGRAPHICS_RE.findall(latex or "")
+        if match.strip()
+    }
+
+
+def _normalize_graphics_path(path: str) -> str:
+    clean = re.sub(r"\s+", "", path or "").replace("\\", "/").strip()
+    for suffix in (".png", ".jpg", ".jpeg", ".pdf", ".eps"):
+        if clean.lower().endswith(suffix):
+            clean = clean[: -len(suffix)]
+            break
+    return clean.lower()
+
+
+def _assert_includegraphics_preserved(input_paths: set[str], converted_latex: str) -> None:
+    if not input_paths:
+        return
+    output_paths = _extract_includegraphics_paths(converted_latex)
+    missing = sorted(input_paths - output_paths)
+    if missing:
+        raise RuntimeError(
+            "LLM conversion dropped includegraphics path(s): " + ", ".join(missing[:8])
+        )
+
+
 def _detect_unresolved(latex: str, target_format: str) -> list[str]:
     """Quick scan for obvious leakage after LLM conversion."""
     issues: list[str] = []
-    if target_format == "acm":
-        if "IEEEtran" in latex:
-            issues.append("Possible IEEEtran class reference remains in ACM output")
-        if r"\begin{IEEEkeywords}" in latex:
-            issues.append("IEEEkeywords environment not fully converted")
-    elif target_format == "ieee":
-        if "acmart" in latex:
-            issues.append("Possible acmart class reference remains in IEEE output")
-        if r"\begin{acks}" in latex:
-            issues.append("ACM acks environment not converted to IEEE acknowledgment section")
+    for pattern in FORBIDDEN_OUTPUT_PATTERNS.get(target_format, []):
+        if re.search(pattern, latex or ""):
+            issues.append(
+                f"Target format '{target_format}' contains source-venue pattern: {pattern}"
+            )
     return issues
 
 

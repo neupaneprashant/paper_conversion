@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from pathlib import Path
 import time
 import traceback
 
 from .job_store import merge_job_meta, now_ts, read_job_meta
+from .logging_utils import configure_logging
 from .orchestrator import route_and_run
 from .packaging import create_job_bundle
+
+logger = logging.getLogger(__name__)
 
 
 def _load_openclaw():
@@ -20,7 +24,7 @@ def _load_openclaw():
             return None, None
         return OpenClawConversionDriver(config), OpenClawLLMProvider(config)
     except Exception as exc:
-        print(f"[OpenClaw] Not available, falling back to local pipeline: {exc}")
+        logger.warning("[OpenClaw] Not available, falling back to local pipeline: %s", exc)
         return None, None
 
 
@@ -50,6 +54,7 @@ def _sleep_if_debug_enabled() -> None:
 
 
 def run_job(job_dir: Path) -> None:
+    configure_logging("worker")
     meta = read_job_meta(job_dir)
     if not meta:
         raise FileNotFoundError(f"Job metadata missing: {job_dir / 'job.json'}")
@@ -80,9 +85,9 @@ def run_job(job_dir: Path) -> None:
 
     openclaw_driver, openclaw_provider = _load_openclaw()
     if openclaw_driver:
-        print(f"[OpenClaw] LLM conversion active (OAuth)")
+        logger.info("[OpenClaw] LLM conversion active (OAuth)")
     else:
-        print(f"[OpenClaw] Using local pipeline (no OAuth tokens found)")
+        logger.info("[OpenClaw] Using local pipeline (no OAuth tokens found)")
 
     try:
         result = route_and_run(
@@ -127,6 +132,7 @@ def run_job(job_dir: Path) -> None:
                 "timeline": _build_timeline(result.to_dict()),
                 "failure_kind": failure_kind,
                 "error": error,
+                "conversion_method": result.conversion_method or "local",
             },
         )
     except Exception as exc:

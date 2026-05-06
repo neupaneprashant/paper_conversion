@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Protocol
 import concurrent.futures
+import difflib
 import json
 import logging
 import os
@@ -67,6 +68,18 @@ def _extract_pdf_text(pdf_path: Path) -> str:
                 doc.close()
             except Exception:
                 pass
+
+
+def _line_change_ratio(before: str, after: str) -> float:
+    before_lines = before.splitlines()
+    after_lines = after.splitlines()
+    baseline = max(len(before_lines), 1)
+    changed = 0
+    matcher = difflib.SequenceMatcher(a=before_lines, b=after_lines, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != "equal":
+            changed += max(i2 - i1, j2 - j1)
+    return changed / baseline
 
 
 def _compute_fidelity(
@@ -304,6 +317,16 @@ class Comp:
                         broken_source, repair_prompt
                     )
                     if repaired_source and repaired_source.strip() != broken_source.strip():
+                        max_repair_change = float(
+                            os.environ.get("PAPER_CONVERSION_MAX_REPAIR_CHANGE_RATIO", "0.35") or "0.35"
+                        )
+                        repair_change_ratio = _line_change_ratio(broken_source, repaired_source)
+                        if repair_change_ratio > max_repair_change:
+                            validation.warnings.append(
+                                f"LLM repair attempt {_repair_attempt + 1}: rejected broad rewrite "
+                                f"({repair_change_ratio:.2%} > {max_repair_change:.2%})"
+                            )
+                            break
                         main_tex.write_text(repaired_source, encoding="utf-8")
                         note_summary = "; ".join(repair_notes[:3]) if repair_notes else "no notes"
                         validation.warnings.append(
@@ -681,4 +704,3 @@ def _ensure_references_bib(src_root: Path, output_dir: Path) -> None:
             best = bib
     if best is not None:
         shutil.copy2(best, ref_dest)
-

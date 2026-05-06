@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Job Detail · Paper Parser</title>
+  <title>Job Detail ? Paper Parser</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300..700;1,8..60,300..700&family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -235,9 +235,9 @@
   <div class="nav-logo">
     <div class="nav-logo-mark">P</div>
     <div class="nav-logo-name">Paper Parser</div>
-    <span class="folio" style="margin-left:8px">Est. 2026 · No. 01</span>
+    <span class="folio" style="margin-left:8px">Est. 2026 ? No. 01</span>
   </div>
-  <a href="/" class="nav-back">← Back to converter</a>
+  <a href="/" class="nav-back">? Back to converter</a>
 </nav>
 
 <div class="page">
@@ -248,7 +248,7 @@
   <div id="downloads-section" hidden>
     <div class="section-head">
       <div>
-        <div class="folio">§ I · Output</div>
+        <div class="folio">? I ? Output</div>
         <h2>Your converted paper.</h2>
       </div>
       <div class="note">Download before closing this page.</div>
@@ -256,7 +256,7 @@
     <div class="rule-thick"></div>
 
     <div class="download-card">
-      <div class="card-label folio">Conversion complete · Ready to download</div>
+      <div class="card-label folio">Conversion complete ? Ready to download</div>
       <div style="font-family:'Spectral',serif; font-style:italic; color:#8A7F73; font-size:14px; margin-top:4px;">
         Files are stored on the server only while the session is active. Download now.
       </div>
@@ -267,8 +267,8 @@
   <!-- Job metadata -->
   <div class="section-head">
     <div>
-      <div class="folio" id="section-folio">§ II · Job status</div>
-      <h2 id="section-title">Loading…</h2>
+      <div class="folio" id="section-folio">? II ? Job status</div>
+      <h2 id="section-title">Loading...</h2>
     </div>
     <div class="note" id="section-note"></div>
   </div>
@@ -276,18 +276,18 @@
 
   <!-- Info cells -->
   <div class="info-grid" id="info-grid">
-    <div class="info-cell"><div class="ic-label">Job ID</div><div class="ic-value small" id="cell-id">—</div></div>
-    <div class="info-cell"><div class="ic-label">Direction</div><div class="ic-value" id="cell-dir">—</div></div>
-    <div class="info-cell"><div class="ic-label">Status</div><div class="ic-value" id="cell-status">—</div></div>
-    <div class="info-cell"><div class="ic-label">Stage</div><div class="ic-value" id="cell-stage">—</div></div>
-    <div class="info-cell"><div class="ic-label">Input file</div><div class="ic-value small" id="cell-input">—</div></div>
-    <div class="info-cell"><div class="ic-label">Timeout</div><div class="ic-value" id="cell-timeout">—</div></div>
+    <div class="info-cell"><div class="ic-label">Job ID</div><div class="ic-value small" id="cell-id">?</div></div>
+    <div class="info-cell"><div class="ic-label">Direction</div><div class="ic-value" id="cell-dir">?</div></div>
+    <div class="info-cell"><div class="ic-label">Status</div><div class="ic-value" id="cell-status">?</div></div>
+    <div class="info-cell"><div class="ic-label">Stage</div><div class="ic-value" id="cell-stage">?</div></div>
+    <div class="info-cell"><div class="ic-label">Input file</div><div class="ic-value small" id="cell-input">?</div></div>
+    <div class="info-cell"><div class="ic-label">Timeout</div><div class="ic-value" id="cell-timeout">?</div></div>
   </div>
 
   <!-- Pipeline timeline -->
   <div class="section-head" style="margin-top:40px">
     <div>
-      <div class="folio">§ III · Pipeline</div>
+      <div class="folio">? III ? Pipeline</div>
       <h2>Stage progress.</h2>
     </div>
   </div>
@@ -305,7 +305,7 @@
   <div id="reports-section" hidden>
     <div class="section-head" style="margin-top:40px">
       <div>
-        <div class="folio">§ IV · Reports</div>
+        <div class="folio">? IV ? Reports</div>
         <h2>Structured output.</h2>
       </div>
     </div>
@@ -315,7 +315,7 @@
 
   <!-- Not found -->
   <div id="not-found" hidden style="margin-top:48px; text-align:center; padding:60px 0;">
-    <div style="font-family:'Source Serif 4',serif; font-size:56px; font-style:italic; color:#D9CDB7;">¶</div>
+    <div style="font-family:'Source Serif 4',serif; font-size:56px; font-style:italic; color:#D9CDB7;">?</div>
     <div style="font-family:'Source Serif 4',serif; font-size:24px; font-weight:500; margin-top:16px;">Job not found</div>
     <div style="font-family:'Spectral',serif; color:#8A7F73; margin-top:8px;">
       No job ID was provided, or this job does not exist.
@@ -325,7 +325,7 @@
       background:#1C1714; color:#FBF7EE; text-decoration:none;
       font-family:'IBM Plex Mono',monospace; font-size:11px;
       letter-spacing:0.12em; text-transform:uppercase;
-    ">← Back to converter</a>
+    ">? Back to converter</a>
   </div>
 </div>
 
@@ -342,7 +342,7 @@
 
   // ── Render helpers ───────────────────────────────────────────────────────────
   const STAGES = [
-    { key:'queued',     label:'Queued',      agent:'—'         },
+    { key:'queued',     label:'Queued',      agent:'?'         },
     { key:'parse',      label:'Parse',       agent:'CPR'       },
     { key:'recompose',  label:'Recompose',   agent:'April / Friday' },
     { key:'compile',    label:'Compile',     agent:'Comp'      },
@@ -365,28 +365,30 @@
     el.className = 'banner';
     if (s === 'success' || s === 'done') {
       el.className += ' banner-ok';
-      el.innerHTML = 'Conversion complete — ready to download.';
+      el.innerHTML = 'Conversion complete ? ready to download.';
     } else if (s === 'failed' || s === 'error') {
       el.className += ' banner-error';
       el.innerHTML = 'Conversion failed. See details below.';
     } else if (s === 'running') {
       el.className += ' banner-running';
-      el.innerHTML = '<span class="spinner"></span>Conversion in progress…';
+      el.innerHTML = '<span class="spinner"></span>Conversion in progress...';
     } else {
       el.className += ' banner-queued';
-      el.innerHTML = '<span class="spinner"></span>Job queued — starting shortly…';
+      el.innerHTML = '<span class="spinner"></span>Job queued ? starting shortly...';
     }
   }
 
   function renderInfoCells(job) {
-    const dir = `${(job.source_format||'?').toUpperCase()} → ${(job.target_format||'?').toUpperCase()}`;
+    const dir = `${(job.source_format||'?').toUpperCase()} ? ${(job.target_format||'?').toUpperCase()}`;
     const filename = (job.input_path || 'n/a').replace(/.*[\\/]/, '');
     qs('cell-id').textContent     = job.job_id || '—';
     qs('cell-dir').textContent    = dir;
     qs('cell-status').textContent = job.status || '—';
-    qs('cell-stage').textContent  = job.stage  || '—';
+    qs('cell-stage').textContent  = job.stage  || '?';
     qs('cell-input').textContent  = filename;
-    qs('cell-timeout').textContent = job.timeout_seconds ? `${job.timeout_seconds}s` : '—';
+    const timeout = job.timeout_seconds ? `${job.timeout_seconds}s` : '?';
+    const method = job.conversion_method || (job.result && job.result.conversion_method) || 'pending';
+    qs('cell-timeout').textContent = `${timeout} ? ${method}`;
   }
 
   function renderTimeline(job) {
@@ -417,28 +419,28 @@
     const to  = (job.target_format || 'output').toUpperCase();
     const grid = qs('download-grid');
 
-    // Update section heading to remove "§ II" numbering on downloads section
-    qs('section-folio').textContent = '§ II · Job details';
+    // Update section heading to remove "? II" numbering on downloads section
+    qs('section-folio').textContent = '? II ? Job details';
 
     grid.innerHTML = `
       <a class="dl-btn dl-btn-primary"
          href="/api/jobs/${id}/artifact/main.pdf"
          download="converted-${esc(job.target_format||'output')}.pdf">
-        <span class="dl-icon">↓</span>
+        <span class="dl-icon">?</span>
         <span class="dl-title">Download PDF</span>
         <span class="dl-sub">Compiled ${esc(to)} paper</span>
       </a>
       <a class="dl-btn dl-btn-secondary"
          href="/api/jobs/${id}/artifact/main.tex"
          download="main.tex">
-        <span class="dl-icon">↓</span>
+        <span class="dl-icon">?</span>
         <span class="dl-title">Download .tex source</span>
         <span class="dl-sub">LaTeX source for ${esc(to)}</span>
       </a>
       <a class="dl-btn dl-btn-accent"
          href="/api/jobs/${id}/download"
          download="bundle.zip">
-        <span class="dl-icon">↓</span>
+        <span class="dl-icon">?</span>
         <span class="dl-title">Download ZIP bundle</span>
         <span class="dl-sub">PDF + source + logs</span>
       </a>
@@ -476,8 +478,8 @@
       done:    ['Conversion complete.', 'Ready to download below.'],
       failed:  ['Conversion failed.',   'See error details below.'],
       error:   ['Conversion failed.',   'See error details below.'],
-      running: ['In progress…',         `Currently: ${job.stage || 'processing'}`],
-      queued:  ['Job queued.',          'Starting shortly…'],
+      running: ['In progress...',         `Currently: ${job.stage || 'processing'}`],
+      queued:  ['Job queued.',          'Starting shortly...'],
     };
     const [title, note] = map[s] || ['Processing…', ''];
     qs('section-title').textContent = title;
@@ -499,10 +501,12 @@
     const jobId = jobIdFromUrl();
     if (!jobId) { qs('not-found').hidden = false; return; }
 
-    document.title = `Job ${jobId.slice(0,8)}… · Paper Parser`;
+    document.title = `Job ${jobId.slice(0,8)}... ? Paper Parser`;
 
     const TERMINAL = new Set(['success','done','failed','error']);
     let failCount = 0;
+    let pollTimer = null;
+    let source = null;
 
     const refresh = async () => {
       try {
@@ -511,19 +515,70 @@
         const job = await res.json();
         failCount = 0;
         renderJob(job);
-        if (TERMINAL.has(job.status)) clearInterval(timer);
+        if (TERMINAL.has(job.status) && pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+        return job;
       } catch (err) {
         failCount++;
         const el = qs('banner');
         el.hidden = false;
         el.className = 'banner banner-error';
-        el.textContent = `Engine unreachable (${err.message}). Retrying…`;
-        if (failCount >= 5) clearInterval(timer);
+        el.textContent = `Engine unreachable (${err.message}). Retrying...`;
+        if (failCount >= 5 && pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+        throw err;
       }
     };
 
-    await refresh();
-    const timer = setInterval(refresh, 2500);
+    const startPollingFallback = async () => {
+      if (pollTimer) return;
+      await refresh().catch(() => {});
+      pollTimer = setInterval(() => { refresh().catch(() => {}); }, 2500);
+    };
+
+    if (!window.EventSource) {
+      await startPollingFallback();
+      return;
+    }
+
+    source = new EventSource(`/api/jobs/${encodeURIComponent(jobId)}/events`);
+
+    source.addEventListener('job', (evt) => {
+      try {
+        const job = JSON.parse(evt.data);
+        failCount = 0;
+        renderJob(job);
+        if (TERMINAL.has(job.status)) {
+          source.close();
+          source = null;
+        }
+      } catch (err) {
+        console.error('SSE parse error', err);
+      }
+    });
+
+    source.addEventListener('error', async () => {
+      const el = qs('banner');
+      el.hidden = false;
+      el.className = 'banner banner-error';
+      el.textContent = 'Engine unreachable (stream disconnected). Falling back to polling...';
+      if (source) {
+        source.close();
+        source = null;
+      }
+      await startPollingFallback();
+    });
+
+    source.addEventListener('done', () => {
+      if (source) {
+        source.close();
+        source = null;
+      }
+    });
   }
 
   main();
