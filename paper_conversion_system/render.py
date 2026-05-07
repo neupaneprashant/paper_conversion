@@ -631,7 +631,20 @@ def _map_section_title(title: str, target_format: str) -> str:
 
 def _render_figures(figures) -> str:
     chunks: list[str] = []
+    # Defensive dedup: drop figures that share a label or path with one
+    # already rendered. Upstream extraction is best-effort and occasionally
+    # leaks duplicates; this is the last line of defence before LaTeX sees
+    # ``\label{fig:1}`` twice (which would warn and break cross-references).
+    seen_labels: set[str] = set()
+    seen_paths: set[str] = set()
     for fig in figures:
+        if fig.label and fig.label in seen_labels:
+            continue
+        if fig.path and fig.path in seen_paths:
+            continue
+        seen_labels.add(fig.label)
+        if fig.path:
+            seen_paths.add(fig.path)
         asset_block = "% Figure asset unavailable from PDF ingest"
         if fig.path:
             asset_block = f"\\includegraphics[width=\\linewidth]{{{fig.path}}}"
@@ -648,7 +661,11 @@ def _render_figures(figures) -> str:
 
 def _render_tables(tables) -> str:
     chunks: list[str] = []
+    seen_labels: set[str] = set()
     for table in tables:
+        if table.label and table.label in seen_labels:
+            continue
+        seen_labels.add(table.label)
         chunks.append(
             f"\\begin{{table}}[{table.placement}]\n"
             f"\\caption{{{table.caption}}}\n"

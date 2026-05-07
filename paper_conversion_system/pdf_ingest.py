@@ -307,15 +307,26 @@ def _attach_extracted_figure_assets(
 
     warnings = cpr.metadata.setdefault("warnings", [])
 
+    # Track which extracted images are already attached to a figure so we
+    # don't re-emit them as duplicate ``fig:extracted{i}`` placeholders.
+    already_used = {fig.path for fig in cpr.figures if fig.path}
+    unused_images = [p for p in extracted_images if p not in already_used]
+
+    # Pair *unused* images with figures that still lack a path, in order.
+    # This avoids overwriting the careful page-level pairing done earlier.
+    placeholders = [fig for fig in cpr.figures if not fig.path]
     paired = 0
-    for fig, image_path in zip(cpr.figures, extracted_images):
-        if not fig.path:
-            fig.path = image_path
+    for fig, image_path in zip(placeholders, unused_images):
+        fig.path = image_path
         fig.placement = "H"
         paired += 1
+    unused_images = unused_images[paired:]
 
-    if len(extracted_images) > len(cpr.figures):
-        for index, image_path in enumerate(extracted_images[len(cpr.figures):], start=len(cpr.figures) + 1):
+    # Any leftover images get appended as generic figure entries — but only
+    # when the document has no captioned figures at all (so we never inflate
+    # an already-correct figure list with phantom duplicates).
+    if unused_images and not cpr.figures:
+        for index, image_path in enumerate(unused_images, start=1):
             cpr.figures.append(
                 Figure(
                     label=f"fig:extracted{index}",
@@ -325,14 +336,40 @@ def _attach_extracted_figure_assets(
                 )
             )
         warnings.append(
-            f"Recovered {len(extracted_images)} embedded image asset(s) but only detected "
-            f"{len(cpr.figures) - (len(extracted_images) - paired)} caption(s); added generic figure entries for extras."
+            f"No figure captions detected; emitted {len(unused_images)} generic figure entries for embedded images."
         )
-    elif len(extracted_images) < len(cpr.figures):
+    elif unused_images:
+        # Keep them noted but do NOT silently inject new figure floats — they
+        # were probably logos, decorative banners, or already-attached images
+        # that survived deduplication.
         warnings.append(
-            f"Detected {len(cpr.figures)} figure caption(s) but only recovered "
-            f"{len(extracted_images)} embedded image asset(s); some figures remain placeholders."
+            f"Skipped {len(unused_images)} embedded image asset(s) without a matching caption "
+            "to avoid duplicate figure placeholders."
         )
+
+    # Final dedup: collapse any figures that ended up sharing the same image
+    # path (keep the entry with the longest caption / a real label).
+    if cpr.figures:
+        by_path: dict[str, Figure] = {}
+        deduped: list[Figure] = []
+        for fig in cpr.figures:
+            key = fig.path or f"__nopath__:{fig.label}"
+            existing = by_path.get(key)
+            if existing is None:
+                by_path[key] = fig
+                deduped.append(fig)
+                continue
+            # Same image already attached to another figure — merge captions
+            # and drop this duplicate.
+            if len(fig.caption) > len(existing.caption):
+                existing.caption = fig.caption
+            if not existing.label.startswith("fig:") and fig.label.startswith("fig:"):
+                existing.label = fig.label
+        if len(deduped) != len(cpr.figures):
+            warnings.append(
+                f"Removed {len(cpr.figures) - len(deduped)} duplicate figure entries that shared the same image asset."
+            )
+            cpr.figures = deduped
 
     return cpr
 
@@ -352,6 +389,12 @@ def _extract_page_level_visuals(
     table_text_map: dict[str, str] = {}
     equation_text_map: dict[str, str] = {}
     image_iter = iter(extracted_images)
+    # Track figure labels we have already seen across the whole document so a
+    # body-text reference (e.g. "Figure 1 shows ...") that re-mentions an
+    # existing figure number does not append a second placeholder Figure entry
+    # — and, more importantly, does not consume an image from ``image_iter``,
+    # which would shift every subsequent figure's image off by one.
+    seen_fig_labels: set[str] = set()
     artifact_root = assets_dir.parent / "artifacts" if assets_dir is not None else None
     figure_root = assets_dir if assets_dir is not None else None
     table_root = artifact_root / "tables" if artifact_root is not None else None
@@ -368,14 +411,38 @@ def _extract_page_level_visuals(
         page = doc[page_index]
         lines = _collect_page_lines(page.get_text("dict"))
         for idx, line in enumerate(lines):
-            fig_match = re.match(r"(?:Fig\.?|Figure)\s*(\d+)\.?\s*(.*)$", line["text"], flags=re.I)
+            # Only treat lines that look like *real* figure captions as such.
+            # A real caption begins with "Fig." / "Figure" + a number followed
+            # by a caption terminator (period, colon, dash, or end-of-line).
+            # Body text such as "Figure 1 shows the architecture overview"
+            # would otherwise be consumed as a caption — duplicating figures
+            # and shifting the image-iterator alignment for every later
+            # figure on the page.
+            fig_match = re.match(
+                r"(?:Fig\.?|Figure)\s*(\d+)\s*(?:[.:\-–—]\s*(.*))?$",
+                line["text"],
+                flags=re.I,
+            )
             if fig_match:
                 number = fig_match.group(1)
-                caption = fig_match.group(2).strip(" .:-")
+                caption = (fig_match.group(2) or "").strip(" .:-")
+                # If the regex did not see a terminator AND the line continues
+                # with a lowercase verb-like word, it is almost certainly a
+                # cross-reference, not a caption.
+                if fig_match.group(2) is None and re.search(
+                    r"^(?:Fig\.?|Figure)\s*\d+\s+[a-z]",
+                    line["text"],
+                ):
+                    continue
                 if not caption and idx + 1 < len(lines):
                     caption = lines[idx + 1]["text"].strip(" .:-")
+                label = f"fig:{number}"
+                if label in seen_fig_labels:
+                    # Already captured this figure earlier in the document —
+                    # do not consume another image from the iterator.
+                    continue
                 if caption:
-                    label = f"fig:{number}"
+                    seen_fig_labels.add(label)
                     image_rel = next(image_iter, "")
                     if not image_rel and figure_root is not None:
                         figure_bbox = _detect_figure_region(page, lines, idx)
@@ -578,6 +645,8 @@ def _anchor_from_lines(
             continue
         if re.match(r"(?:TABLE\s+[IVXLC0-9]+|Fig\.\s*\d+|REFERENCES$)", text, flags=re.I):
             continue
+        if _looks_like_section_heading_line(text):
+            continue
         anchor_lines.append(text)
         if len(anchor_lines) >= max_lines:
             break
@@ -593,15 +662,24 @@ def _infer_section_title(lines: list[dict], idx: int) -> str:
     return ""
 
 
+def _looks_like_section_heading_line(text: str) -> bool:
+    compact = text.strip()
+    if re.match(r"(?:[IVX]+|\d+)\.\s+[A-Z][A-Z\s\-]+$", compact):
+        return True
+    if re.match(r"[A-Z]\.\s+[A-Z][A-Za-z'\-]*(?:\s+[A-Z][A-Za-z'\-]*){0,7}$", compact):
+        return True
+    return False
+
+
 def _detect_table_regions(lines: list[dict], page_width: float) -> list[dict]:
     regions: list[dict] = []
     idx = 0
     while idx < len(lines):
-        match = re.match(r"TABLE\s+([IVXLC0-9]+)\s*$", lines[idx]["text"], flags=re.I)
-        if not match:
+        heading = _parse_table_heading(lines[idx]["text"])
+        if heading is None:
             idx += 1
             continue
-        label = f"tab:{match.group(1).lower()}"
+        label = f"tab:{heading['number'].lower()}"
         origin_bbox = lines[idx]["bbox"]
         section_title = _infer_section_title(lines, idx)
         anchor_text = _anchor_from_lines(lines, idx, origin_bbox=origin_bbox, page_width=page_width)
@@ -623,7 +701,10 @@ def _detect_table_regions(lines: list[dict], page_width: float) -> list[dict]:
             elif len(region_lines) > 1 and current_line["bbox"][1] > last_y + 42:
                 break
             end += 1
-        caption, caption_idx = _select_table_caption(region_lines, label, page_width)
+        if heading["caption"]:
+            caption, caption_idx = heading["caption"], 0
+        else:
+            caption, caption_idx = _select_table_caption(region_lines, label, page_width)
         data_lines = [line["text"] for line in region_lines[caption_idx + 1:]]
         bbox = _union_bboxes([line["bbox"] for line in region_lines])
         regions.append(
@@ -639,6 +720,30 @@ def _detect_table_regions(lines: list[dict], page_width: float) -> list[dict]:
         )
         idx = end
     return regions
+
+
+def _parse_table_heading(text: str) -> dict[str, str] | None:
+    match = re.match(r"^TABLE\s+([IVXLC]+|\d+)\s*(.*)$", text.strip(), flags=re.I)
+    if not match:
+        return None
+    caption = match.group(2).strip(" .:-")
+    if caption and not _looks_like_table_caption_text(caption):
+        return None
+    return {"number": match.group(1), "caption": caption}
+
+
+def _looks_like_table_caption_text(text: str) -> bool:
+    compact = text.strip()
+    if len(compact) < 8:
+        return False
+    lower = compact.lower()
+    if lower.startswith(("shows ", "summarizes ", "presents ", "lists ", "reports ", "is ", "are ")):
+        return False
+    if len(compact.split()) < 2:
+        return False
+    if compact[0].islower():
+        return False
+    return True
 
 
 def _detect_equation_regions(lines: list[dict], page_width: float) -> list[dict]:

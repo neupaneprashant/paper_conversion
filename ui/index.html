@@ -460,7 +460,31 @@ const TemplatePill = ({ label, dark, accent }) => (
   }}>{label}</div>
 );
 
-const ProofPanel = ({ stage, to, accent, progress, jobId }) => (
+// Turn an uploaded filename into a presentable display title.
+// "Edge_Oriented_Redistribution_of_Computational_Load_for_Authentication_Systems.pdf"
+//   → "Edge Oriented Redistribution of Computational Load for Authentication Systems"
+// Drops the extension, normalises separators, strips any leading "arxiv-" /
+// version suffixes, and lower-cases the small connector words for a more
+// natural-looking heading.
+const titleFromFilename = (raw) => {
+  if (!raw) return '';
+  let name = String(raw).trim();
+  name = name.replace(/\.(pdf|tex|zip|tar|gz|tgz)$/i, '');
+  name = name.replace(/^(?:arxiv[-_]?|preprint[-_]?)/i, '');
+  name = name.replace(/[-_]+/g, ' ');
+  name = name.replace(/\s+v?\d+(\.\d+)*$/i, '');     // "...paper v2" → "...paper"
+  name = name.replace(/\s+/g, ' ').trim();
+  if (!name) return '';
+  const small = new Set(['of','for','and','the','in','on','to','a','an','via','with','from']);
+  return name.split(' ').map((w, i) => {
+    const lower = w.toLowerCase();
+    if (i > 0 && small.has(lower)) return lower;
+    if (w.length <= 3 && /^[A-Z]+$/.test(w)) return w; // keep acronyms uppercase
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  }).join(' ');
+};
+
+const ProofPanel = ({ stage, to, accent, progress, jobId, filename }) => (
   <div style={{
     background: T.paper, border: `1px solid ${T.ink}`,
     position: 'relative', overflow: 'hidden', minHeight: 380,
@@ -511,9 +535,18 @@ const ProofPanel = ({ stage, to, accent, progress, jobId }) => (
             <div style={{
               fontFamily: "'Source Serif 4', serif", fontSize: 16, fontWeight: 600,
               textAlign: to === 'IEEE' ? 'center' : 'left', lineHeight: 1.2,
-            }}>Adaptive Thermal Regulation in Distributed Edge Compute Clusters</div>
-            <div style={{ fontSize: 10, color: T.muted, marginTop: 5, fontStyle: 'italic', textAlign: to === 'IEEE' ? 'center' : 'left' }}>
-              A. Chen, M. Okonkwo, R. Iyer
+              minHeight: 20,
+            }}>{titleFromFilename(filename) || (
+              <span style={{ display: 'inline-block', height: 14, width: '70%',
+                background: T.rule, opacity: 0.6 }} />
+            )}</div>
+            <div style={{ fontSize: 10, color: T.muted, marginTop: 5, fontStyle: 'italic',
+              textAlign: to === 'IEEE' ? 'center' : 'left', minHeight: 12 }}>
+              {/* Authors are unknown until the parser reports back; show a
+                  shimmer line instead of a fabricated byline so the preview
+                  always reflects what we actually know. */}
+              <span style={{ display: 'inline-block', height: 8, width: '40%',
+                background: T.rule, opacity: 0.5 }} />
             </div>
             <div style={{
               display: 'grid', gridTemplateColumns: to === 'IEEE' ? '1fr 1fr' : '1fr',
@@ -712,7 +745,7 @@ const ConverterWidget = ({ accent }) => {
               }}>⇌</button>
               <TemplatePill label={to} accent={accent} />
               <div style={{ flex: 1 }} />
-              <Folio>6.3 MB limit · PDF</Folio>
+              <Folio>10 MB · PDF / 50 MB · ZIP</Folio>
             </div>
           </div>
 
@@ -874,7 +907,7 @@ const ConverterWidget = ({ accent }) => {
         </div>
 
         {/* Proof panel */}
-        <ProofPanel stage={stage} to={to} accent={accent} progress={progress} jobId={jobId} />
+        <ProofPanel stage={stage} to={to} accent={accent} progress={progress} jobId={jobId} filename={filename} />
       </div>
     </section>
   );

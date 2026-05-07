@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .models import new_job_id
-from .job_store import copy_input, ensure_job_dirs, merge_job_meta, now_ts, read_job_meta, write_job_meta
+from .job_store import ZipExtractionError, copy_input, ensure_job_dirs, merge_job_meta, now_ts, read_job_meta, write_job_meta
 from .logging_utils import configure_logging
 
 
@@ -100,6 +100,20 @@ BROWSE_HOME = Path.home()
 DEFAULT_JOB_TIMEOUT_SECONDS = int(os.environ.get("PAPER_CONVERSION_JOB_TIMEOUT_SECONDS", "600"))
 ACTIVE_JOB_STATUSES = {"queued", "running"}
 TERMINAL_JOB_STATUSES = {"success", "failed"}
+
+# Per-extension upload size caps. PDF / .tex are usually small; .zip needs a
+# generous limit because real LaTeX projects routinely include 30–80 MB of
+# figure assets. Anything larger than these caps is rejected at the request
+# boundary so we never write the upload to disk in the first place.
+_UPLOAD_SIZE_LIMITS: dict[str, int] = {
+    ".pdf": 10 * 1024 * 1024,    # 10 MB
+    ".tex":  4 * 1024 * 1024,    # 4 MB
+    ".bib":  4 * 1024 * 1024,    # 4 MB
+    ".zip": 50 * 1024 * 1024,    # 50 MB
+}
+# Hard cap for any upload type so a malformed request cannot trigger a
+# multi-GB ``rfile.read``.
+_UPLOAD_ABSOLUTE_LIMIT = 60 * 1024 * 1024  # 60 MB
 
 
 class JobManager:
@@ -584,6 +598,20 @@ class Handler(BaseHTTPRequestHandler):
             if ctype == "multipart/form-data":
                 try:
                     content_length = int(self.headers.get('Content-Length', '0'))
+                    # Reject grossly oversized requests up-front so we never
+                    # buffer the whole body into memory just to discover it
+                    # would have failed validation. Multipart overhead is
+                    # small (a few KB), so the absolute cap is a safe gate
+                    # for the largest legitimate upload type (.zip).
+                    if content_length <= 0:
+                        return self._json({"error": "Empty or missing Content-Length"}, 411)
+                    if content_length > _UPLOAD_ABSOLUTE_LIMIT:
+                        return self._json({
+                            "error": (
+                                f"Upload is {content_length / (1024 * 1024):.1f} MB; "
+                                f"limit is {_UPLOAD_ABSOLUTE_LIMIT / (1024 * 1024):.0f} MB."
+                            )
+                        }, 413)
                     form = _parse_multipart(self.rfile, content_length, pdict.get('boundary', ''))
                     logger.info("[POST] Form keys: %s", list(form.keys()))
 
@@ -617,6 +645,23 @@ class Handler(BaseHTTPRequestHandler):
                     if suffix not in ['.pdf', '.tex', '.zip']:
                         return self._json({"error": f"Unsupported file type: {suffix}. Please upload .pdf, .tex, or .zip files."}, 400)
 
+                    # Per-extension upload-size cap. ``file_item`` exposes the
+                    # raw bytes via ``file.read()``; we peek at the size
+                    # before saving so we never write an oversize upload to
+                    # disk. ``len(file_item.value)`` works because the
+                    # multipart parser already buffered the field.
+                    raw_bytes = file_item.file.read()
+                    file_item.file.seek(0)  # rewind for the later save
+                    file_size = len(raw_bytes)
+                    extension_limit = _UPLOAD_SIZE_LIMITS.get(suffix)
+                    if extension_limit is not None and file_size > extension_limit:
+                        return self._json({
+                            "error": (
+                                f"{suffix} upload is {file_size / (1024 * 1024):.1f} MB; "
+                                f"limit for {suffix} is {extension_limit / (1024 * 1024):.0f} MB."
+                            )
+                        }, 413)
+
                     # Create isolated temp directory for this job
                     job_id = str(uuid.uuid4())
                     temp_base = Path(tempfile.gettempdir()) / "paper_conversion"
@@ -624,18 +669,26 @@ class Handler(BaseHTTPRequestHandler):
                     job_temp_dir = temp_base / job_id
                     job_temp_dir.mkdir(parents=True, exist_ok=True)
 
-                    # Save uploaded file to temp directory
+                    # Save uploaded file to temp directory using the bytes we
+                    # already read for size validation — avoids depending on
+                    # the form field's underlying buffer being seekable.
                     input_path = job_temp_dir / original_filename
                     with open(input_path, 'wb') as f:
-                        f.write(file_item.file.read())
+                        f.write(raw_bytes)
 
-                    # Create job with temp file
-                    meta = JOB_MANAGER.create_job(
-                        source_format=source_format,
-                        target_format=target_format,
-                        input_path=str(input_path),
-                        fidelity_mode="preserve",
-                    )
+                    # Create job with temp file. ZipExtractionError is the
+                    # only validation error raised inside create_job that
+                    # corresponds to bad user input; everything else is a
+                    # genuine 5xx.
+                    try:
+                        meta = JOB_MANAGER.create_job(
+                            source_format=source_format,
+                            target_format=target_format,
+                            input_path=str(input_path),
+                            fidelity_mode="preserve",
+                        )
+                    except ZipExtractionError as zerr:
+                        return self._json({"error": str(zerr)}, 413)
                     return self._json(meta, 201)
 
                 except Exception as e:
@@ -677,12 +730,15 @@ class Handler(BaseHTTPRequestHandler):
                         if suffix not in ['.pdf', '.tex', '.bib', '.zip']:
                             return self._json({"error": f"Unsupported file type {suffix}. Please provide a PDF file, LaTeX project folder, or .zip archive."}, 400)
 
-                    meta = JOB_MANAGER.create_job(
-                        source_format=source_format,
-                        target_format=target_format,
-                        input_path=input_path,
-                        fidelity_mode=fidelity_mode,
-                    )
+                    try:
+                        meta = JOB_MANAGER.create_job(
+                            source_format=source_format,
+                            target_format=target_format,
+                            input_path=input_path,
+                            fidelity_mode=fidelity_mode,
+                        )
+                    except ZipExtractionError as zerr:
+                        return self._json({"error": str(zerr)}, 413)
                     return self._json(meta, 201)
                 except json.JSONDecodeError as e:
                     return self._json({"error": f"Invalid JSON: {str(e)}"}, 400)
