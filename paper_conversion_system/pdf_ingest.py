@@ -13,6 +13,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 from .models import CanonicalPaperRepresentation, Figure, Section, Reference, Table
+from .pdf_artifact_hygiene import enforce_pdf_artifact_contract, looks_like_pdf_table_caption
 from .pdf_cleanup import clean_pdf_text, aggressive_cleanup_pass
 from .pdf_doctype import detect_pdf_document_type, extract_thesis_body_text
 from .pdf_postprocess import refine_cpr_from_pdf
@@ -42,7 +43,7 @@ def parse_pdf_to_cpr(
     if backend == "grobid" and grobid_url:
         grobid_cpr = _parse_pdf_with_grobid(pdf_path, source_format_hint, grobid_url, fidelity_mode=fidelity_mode)
         if grobid_cpr is not None:
-            return grobid_cpr
+            return enforce_pdf_artifact_contract(grobid_cpr)
     doc = fitz.open(str(pdf_path))
     try:
         pages = [page.get_text() for page in doc]
@@ -81,7 +82,7 @@ def parse_pdf_to_cpr(
         cpr.metadata["page_count"] = page_count
         if extracted_images:
             cpr.metadata["extracted_figure_assets"] = extracted_images
-        return cpr
+        return enforce_pdf_artifact_contract(cpr)
 
     text_source = raw_text
     text, cleanup_meta = clean_pdf_text(text_source, mode=cleanup_mode)
@@ -169,7 +170,7 @@ def parse_pdf_to_cpr(
     else:
         cpr.metadata["cleanup"]["aggressive_applied"] = False
 
-    return cpr
+    return enforce_pdf_artifact_contract(cpr)
 
 
 def _extract_embedded_images(doc: fitz.Document, assets_dir: Path | None) -> list[str]:
@@ -778,19 +779,7 @@ def _parse_table_heading(text: str) -> dict[str, str] | None:
 
 
 def _looks_like_table_caption_text(text: str) -> bool:
-    compact = text.strip()
-    if len(compact) < 8:
-        return False
-    if not re.match(r"^[A-Z0-9]", compact):
-        return False
-    lower = compact.lower()
-    if lower.startswith(("shows ", "summarizes ", "presents ", "lists ", "reports ", "is ", "are ")):
-        return False
-    if len(compact.split()) < 2:
-        return False
-    if compact[0].islower():
-        return False
-    return True
+    return looks_like_pdf_table_caption(text)
 
 
 def _extend_table_caption_from_index(region_lines: list[dict], caption: str, caption_idx: int) -> tuple[str, int]:

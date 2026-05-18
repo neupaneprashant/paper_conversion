@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from .models import CanonicalPaperRepresentation, Section, Figure, Table, Reference
+from .pdf_artifact_hygiene import looks_like_pdf_table_caption
 
 
 AFFILIATION_HINTS = [
@@ -248,9 +249,7 @@ def _extract_figures_and_tables(cpr: CanonicalPaperRepresentation) -> CanonicalP
                 continue
             if len(caption.split()) < 3:
                 continue
-            if not re.match(r"^[A-Z0-9]", caption):
-                continue
-            if caption[0].islower():
+            if not looks_like_pdf_table_caption(caption):
                 continue
             label = f"tab:{m.group(1).lower()}"
             if any(t.label == label for t in tables):

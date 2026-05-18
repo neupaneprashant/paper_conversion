@@ -3,6 +3,7 @@ import time
 
 from paper_conversion_system.cpr import parse_project_to_cpr
 from paper_conversion_system.models import CanonicalPaperRepresentation, Figure, Reference, Section, Table
+from paper_conversion_system.pdf_artifact_hygiene import enforce_pdf_artifact_contract
 from paper_conversion_system.pdf_cleanup import clean_pdf_text
 from paper_conversion_system.pdf_ingest import _detect_equation_regions, _detect_table_regions, _extract_frontmatter, _extract_sections
 from paper_conversion_system.pdf_postprocess import _add_subsection_markers, _clean_section_content, _separate_references
@@ -237,6 +238,82 @@ def test_pdf_artifact_text_is_removed_when_visual_fallback_is_inserted(tmp_path:
     assert "Equation block x = y + z (1)" not in text
     assert "\\includegraphics[width=\\textwidth,height=0.30\\textheight,keepaspectratio]{artifacts/tables/table_p4_1.png}" in text
     assert "\\includegraphics[width=0.72\\linewidth,height=0.16\\textheight,keepaspectratio]{artifacts/equations/equation_p4_1.png}" in text
+
+
+def test_pdf_artifact_contract_centralizes_visual_scrub_metadata():
+    cpr = CanonicalPaperRepresentation(
+        title="Contract",
+        authors=["Alice"],
+        sections=[Section(title="Results", content="Body")],
+        tables=[
+            Table(
+                label="tab:i",
+                caption="ACCURATE TIMING RESULTS",
+                latex="\\centering\n\\includegraphics{artifacts/tables/table_p1_1.png}",
+                placement="H",
+            ),
+            Table(
+                label="tab:bad",
+                caption=", this is really prose",
+                latex="\\centering\n\\includegraphics{artifacts/tables/table_p1_2.png}",
+                placement="H",
+            ),
+        ],
+        metadata={
+            "ingest_mode": "pdf",
+            "table_section_map": {"tab:i": "Results", "tab:bad": "Results"},
+            "table_anchor_map": {"tab:i": "The timing results are below."},
+            "table_text_map": {"tab:i": "TABLE I ACCURATE TIMING RESULTS 10 20"},
+            "equation_artifacts": [
+                {
+                    "label": "eqimg:1:1",
+                    "path": "artifacts/equations/equation_p1_1.png",
+                    "section_title": "Results",
+                    "raw_text": "x = y + z (1)",
+                }
+            ],
+        },
+    )
+    enforce_pdf_artifact_contract(cpr)
+    manifest = cpr.metadata["pdf_artifact_manifest"]
+    assert [table.label for table in cpr.tables] == ["tab:i"]
+    assert any(item["kind"] == "table" and item["label"] == "tab:i" for item in manifest)
+    assert any(item["kind"] == "equation" and item["label"] == "eqimg:1:1" for item in manifest)
+    assert "ACCURATE TIMING RESULTS" in cpr.metadata["artifact_scrub_map"]["tab:i"]
+
+
+def test_render_uses_pdf_artifact_contract_for_scrubbing(tmp_path: Path):
+    cpr = CanonicalPaperRepresentation(
+        title="Base Scrub",
+        authors=["Alice"],
+        sections=[
+            Section(
+                title="Results",
+                content=(
+                    "The table is below. TABLE I ACCURATE TIMING RESULTS "
+                    "Client Server 10 20 The prose continues."
+                ),
+            )
+        ],
+        tables=[
+            Table(
+                label="tab:i",
+                caption="ACCURATE TIMING RESULTS",
+                latex="\\centering\n\\includegraphics{artifacts/tables/table_p1_1.png}",
+                placement="H",
+            )
+        ],
+        metadata={
+            "ingest_mode": "pdf",
+            "table_section_map": {"tab:i": "Results"},
+            "table_text_map": {"tab:i": "TABLE I ACCURATE TIMING RESULTS Client Server 10 20"},
+        },
+    )
+    out = tmp_path / "out"
+    render_cpr_to_target(cpr, "acm", out)
+    text = (out / "main.tex").read_text(encoding="utf-8")
+    assert "TABLE I ACCURATE TIMING RESULTS Client Server 10 20" not in text
+    assert "\\begin{table*}[!t]" in text
 
 
 def test_pdf_visual_table_residue_is_scrubbed_from_partial_overlap(tmp_path: Path):

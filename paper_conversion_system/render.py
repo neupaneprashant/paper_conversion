@@ -5,6 +5,7 @@ import re
 
 from .cpr import strip_balanced_command
 from .models import CanonicalPaperRepresentation
+from .pdf_artifact_hygiene import artifact_scrub_snippets_for_section, enforce_pdf_artifact_contract
 from .templates import ACM_MAIN_TEMPLATE, IEEE_MAIN_TEMPLATE
 
 
@@ -23,6 +24,8 @@ def render_cpr_to_target(cpr: CanonicalPaperRepresentation, target_format: str, 
     output_dir.mkdir(parents=True, exist_ok=True)
     ingest_mode = str(cpr.metadata.get("ingest_mode", "") or "")
     escape_body = ingest_mode.startswith("pdf")
+    if escape_body:
+        cpr = enforce_pdf_artifact_contract(cpr)
     preserved_preamble = _render_preserved_preamble(cpr, target_format, escape_body=escape_body)
     body = _render_body(cpr, target_format, escape_body=escape_body)
     extra_preamble = _render_extra_preamble(cpr, body)
@@ -243,6 +246,7 @@ def _render_body(cpr: CanonicalPaperRepresentation, target_format: str, escape_b
                 variant_text = str(variant or "").strip()
                 if variant_text:
                     scrub_snippets.append(variant_text)
+        scrub_snippets.extend(artifact_scrub_snippets_for_section(cpr, section.title))
 
         content = _remove_artifact_snippets(section.content.strip(), scrub_snippets)
         if section_tables:
@@ -868,7 +872,12 @@ def _apply_paragraphwise(content: str, transform) -> str:
 
 def _remove_artifact_snippets(content: str, snippets: list[str]) -> str:
     unique_snippets = sorted(
-        {_normalise_artifact_text(snippet or "") for snippet in snippets if snippet and len(" ".join(snippet.split())) >= 24},
+        {
+            normalized
+            for snippet in snippets
+            if (normalized := _normalise_artifact_text(snippet or ""))
+            and _should_scrub_artifact_snippet(normalized)
+        },
         key=len,
         reverse=True,
     )
@@ -909,6 +918,19 @@ def _remove_artifact_snippets(content: str, snippets: list[str]) -> str:
         return re.sub(r"\s+", " ", working).strip()
 
     return _apply_paragraphwise(content, transform)
+
+
+def _should_scrub_artifact_snippet(snippet: str) -> bool:
+    words = snippet.split()
+    if len(words) >= 24:
+        return True
+    if snippet.upper().startswith("TABLE ") and len(words) >= 5:
+        return True
+    if len(words) >= 6 and sum(ch.isdigit() for ch in snippet) >= 4:
+        return True
+    if len(words) >= 5 and "=" in snippet and re.search(r"\(\d+\)", snippet):
+        return True
+    return False
 
 
 def _artifact_snippet_allows_overlap_scrub(snippet: str) -> bool:
