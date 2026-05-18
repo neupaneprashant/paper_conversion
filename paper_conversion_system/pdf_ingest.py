@@ -68,10 +68,13 @@ def parse_pdf_to_cpr(
             doc.close()
         except Exception:
             pass
+    suppressed_supplemental_tables = 0
     if backend in {"pdfplumber", "heuristic"}:
         supplemental_tables = _extract_tables_with_pdfplumber(pdf_path, assets_dir)
-        if supplemental_tables:
+        if supplemental_tables and not page_tables:
             page_tables.extend(supplemental_tables)
+        elif supplemental_tables:
+            suppressed_supplemental_tables = len(supplemental_tables)
     if doc_type == "thesis_dissertation":
         cpr = parse_thesis_text_to_cpr(raw_text, source_path=str(pdf_path))
         cpr.metadata["document_type_meta"] = doc_meta
@@ -114,7 +117,13 @@ def parse_pdf_to_cpr(
         "table_text_map": table_text_map,
         "equation_text_map": equation_text_map,
         "equation_artifacts": equation_artifacts,
+        "suppressed_supplemental_tables": suppressed_supplemental_tables,
     })
+    if suppressed_supplemental_tables:
+        metadata.setdefault("warnings", []).append(
+            f"Skipped {suppressed_supplemental_tables} supplemental pdfplumber table(s) because "
+            "heuristic visual table crops already exist; this avoids duplicate table/image blocks."
+        )
 
     cpr = CanonicalPaperRepresentation(
         title=title or pdf_path.stem,
@@ -388,7 +397,7 @@ def _extract_page_level_visuals(
     table_anchor_map: dict[str, str] = {}
     table_text_map: dict[str, str] = {}
     equation_text_map: dict[str, str] = {}
-    image_iter = iter(extracted_images)
+    images_by_page = _image_paths_by_page(extracted_images)
     # Track figure labels we have already seen across the whole document so a
     # body-text reference (e.g. "Figure 1 shows ...") that re-mentions an
     # existing figure number does not append a second placeholder Figure entry
@@ -443,7 +452,7 @@ def _extract_page_level_visuals(
                     continue
                 if caption:
                     seen_fig_labels.add(label)
-                    image_rel = next(image_iter, "")
+                    image_rel = _pop_page_image(images_by_page, page_index + 1)
                     if not image_rel and figure_root is not None:
                         figure_bbox = _detect_figure_region(page, lines, idx)
                         if figure_bbox is not None:
@@ -477,7 +486,10 @@ def _extract_page_level_visuals(
                 )
             latex = _table_lines_to_latex(region["data_lines"])
             if image_rel:
-                latex = "\\centering\n" + f"\\includegraphics[width=\\linewidth]{{{image_rel}}}"
+                latex = "\\centering\n" + (
+                    f"\\includegraphics[width=\\linewidth,height=0.34\\textheight,keepaspectratio]"
+                    f"{{{image_rel}}}"
+                )
             tables.append(Table(label=label, caption=_cleanup(caption), latex=latex, placement="H"))
             table_section_map[label] = region["section_title"]
             table_anchor_map[label] = region["anchor_text"]
@@ -563,6 +575,23 @@ def _table_lines_to_latex(lines: list[str]) -> str:
     latex_lines.append("\\hline")
     latex_lines.append("\\end{tabular}")
     return "\n".join(latex_lines)
+
+
+def _image_paths_by_page(paths: list[str]) -> dict[int, list[str]]:
+    grouped: dict[int, list[str]] = {}
+    for path in paths:
+        match = re.search(r"(?:^|[/\\])figure_p(\d+)_\d+\.", path, flags=re.I)
+        if not match:
+            continue
+        grouped.setdefault(int(match.group(1)), []).append(path)
+    return grouped
+
+
+def _pop_page_image(grouped: dict[int, list[str]], page_number: int) -> str:
+    page_images = grouped.get(page_number) or []
+    if not page_images:
+        return ""
+    return page_images.pop(0)
 
 
 def _extract_tables_with_pdfplumber(pdf_path: Path, assets_dir: Path | None) -> list[Table]:
@@ -1171,6 +1200,8 @@ def _crop_region(page: fitz.Page, bbox: fitz.Rect, out_path: Path, rel_prefix: s
     clip.y0 = max(0, clip.y0 - 6)
     clip.x1 = min(page.rect.width, clip.x1 + 6)
     clip.y1 = min(page.rect.height, clip.y1 + 6)
+    if clip.is_empty or clip.width < 4 or clip.height < 4:
+        return ""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, alpha=False)
     pix.save(out_path)

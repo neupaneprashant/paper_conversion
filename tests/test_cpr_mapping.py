@@ -4,8 +4,8 @@ import time
 from paper_conversion_system.cpr import parse_project_to_cpr
 from paper_conversion_system.models import CanonicalPaperRepresentation, Figure, Reference, Section, Table
 from paper_conversion_system.pdf_cleanup import clean_pdf_text
-from paper_conversion_system.pdf_ingest import _detect_equation_regions, _extract_frontmatter, _extract_sections
-from paper_conversion_system.pdf_postprocess import _add_subsection_markers, _separate_references
+from paper_conversion_system.pdf_ingest import _detect_equation_regions, _detect_table_regions, _extract_frontmatter, _extract_sections
+from paper_conversion_system.pdf_postprocess import _add_subsection_markers, _clean_section_content, _separate_references
 from paper_conversion_system.render import _guess_bibtex_fields, _remove_equation_residue, render_cpr_to_target
 
 
@@ -100,7 +100,7 @@ def test_pdf_table_asset_is_reinserted_near_anchor(tmp_path: Path):
     out = tmp_path / "out"
     render_cpr_to_target(cpr, "acm", out)
     text = (out / "main.tex").read_text(encoding="utf-8")
-    assert "\\includegraphics[width=\\linewidth]{artifacts/tables/table_p4_1.png}" in text
+    assert "\\includegraphics[width=\\linewidth,height=0.34\\textheight,keepaspectratio]{artifacts/tables/table_p4_1.png}" in text
     assert text.index("The validation performance rate was measured carefully.") < text.index("\\begin{table}[H]")
 
 
@@ -234,8 +234,8 @@ def test_pdf_artifact_text_is_removed_when_visual_fallback_is_inserted(tmp_path:
     text = (out / "main.tex").read_text(encoding="utf-8")
     assert "TABLE III MAXIMUM OF 60 RSSI VALUES RESULTS Actual points Estimated points Difference" not in text
     assert "Equation block x = y + z (1)" not in text
-    assert "\\includegraphics[width=\\linewidth]{artifacts/tables/table_p4_1.png}" in text
-    assert "\\includegraphics[width=0.72\\linewidth]{artifacts/equations/equation_p4_1.png}" in text
+    assert "\\includegraphics[width=\\linewidth,height=0.34\\textheight,keepaspectratio]{artifacts/tables/table_p4_1.png}" in text
+    assert "\\includegraphics[width=0.72\\linewidth,height=0.16\\textheight,keepaspectratio]{artifacts/equations/equation_p4_1.png}" in text
 
 
 def test_pdf_equation_residue_removes_multiply_x_variant(tmp_path: Path):
@@ -274,7 +274,7 @@ def test_pdf_equation_residue_removes_multiply_x_variant(tmp_path: Path):
     assert "TP + TN N x 100 (4)" not in text
     assert "PERFORMANCE MEASUREMENT Actual" not in text
     assert "Negative True False" not in text
-    assert "\\includegraphics[width=0.72\\linewidth]{artifacts/equations/equation_p4_1.png}" in text
+    assert "\\includegraphics[width=0.72\\linewidth,height=0.16\\textheight,keepaspectratio]{artifacts/equations/equation_p4_1.png}" in text
 
 
 def test_pdf_equation_artifacts_anchor_by_equation_number(tmp_path: Path):
@@ -320,8 +320,8 @@ def test_pdf_equation_artifacts_anchor_by_equation_number(tmp_path: Path):
     out = tmp_path / "out"
     render_cpr_to_target(cpr, "acm", out)
     text = (out / "main.tex").read_text(encoding="utf-8")
-    eq1 = "\\includegraphics[width=0.72\\linewidth]{artifacts/equations/equation_wrong_section_1.png}"
-    eq2 = "\\includegraphics[width=0.72\\linewidth]{artifacts/equations/equation_wrong_section_2.png}"
+    eq1 = "\\includegraphics[width=0.72\\linewidth,height=0.16\\textheight,keepaspectratio]{artifacts/equations/equation_wrong_section_1.png}"
+    eq2 = "\\includegraphics[width=0.72\\linewidth,height=0.16\\textheight,keepaspectratio]{artifacts/equations/equation_wrong_section_2.png}"
     assert text.index("equation (1).") < text.index(eq1) < text.index("Where the variables")
     assert text.index("equation (2).") < text.index(eq2) < text.index("The validation text")
     assert text.index(eq2) < text.index("\\section{Experiment}")
@@ -604,6 +604,34 @@ def test_equation_region_groups_multiline_system_without_table_rows():
     assert regions[0]["equation_number"] == "2"
 
 
+def test_pdf_table_region_detects_same_line_caption():
+    lines = [
+        {"text": "II. EXPERIMENT", "bbox": (72.0, 100.0, 180.0, 112.0)},
+        {"text": "The results are summarized below.", "bbox": (72.0, 126.0, 250.0, 138.0)},
+        {"text": "TABLE III Maximum RSSI values across devices", "bbox": (72.0, 166.0, 280.0, 178.0)},
+        {"text": "Actual points Estimated points Difference", "bbox": (72.0, 188.0, 300.0, 200.0)},
+        {"text": "1.0 1.2 0.2", "bbox": (72.0, 206.0, 150.0, 218.0)},
+        {"text": "The next paragraph resumes after the table.", "bbox": (72.0, 268.0, 330.0, 280.0)},
+    ]
+    regions = _detect_table_regions(lines, 595.0)
+    assert len(regions) == 1
+    assert regions[0]["label"] == "tab:iii"
+    assert regions[0]["caption"] == "Maximum RSSI values across devices"
+    assert regions[0]["data_lines"] == [
+        "Actual points Estimated points Difference",
+        "1.0 1.2 0.2",
+    ]
+    assert regions[0]["anchor_text"] == "The results are summarized below."
+
+
+def test_pdf_table_region_ignores_body_reference_sentence():
+    lines = [
+        {"text": "Table 1 shows the final calibration results for each participant.", "bbox": (72.0, 126.0, 370.0, 138.0)},
+        {"text": "The following paragraph is normal body text.", "bbox": (72.0, 146.0, 330.0, 158.0)},
+    ]
+    assert _detect_table_regions(lines, 595.0) == []
+
+
 def test_pdf_figure_is_attached_to_matching_section_without_explicit_map(tmp_path: Path):
     cpr = CanonicalPaperRepresentation(
         title="Figure placement",
@@ -632,6 +660,48 @@ def test_pdf_figure_is_attached_to_matching_section_without_explicit_map(tmp_pat
     text = (out / "main.tex").read_text(encoding="utf-8")
     assert text.index("\\section{Method}") < text.index("\\begin{figure}[tbp]")
     assert text.index("\\begin{figure}[tbp]") < text.index("\\section{Evaluation}")
+
+
+def test_pdf_render_dedupes_duplicate_figure_paths_and_caps_size(tmp_path: Path):
+    cpr = CanonicalPaperRepresentation(
+        title="Figure dedup",
+        authors=["Alice"],
+        sections=[Section(title="Method", content="The workflow appears in Figure 1 and Figure 2.")],
+        figures=[
+            Figure(label="fig:1", caption="Workflow overview", path="figures/shared.png"),
+            Figure(label="fig:2", caption="Workflow overview duplicate", path="figures/shared.png"),
+        ],
+        metadata={"ingest_mode": "pdf"},
+    )
+    out = tmp_path / "out"
+    render_cpr_to_target(cpr, "ieee", out)
+    text = (out / "main.tex").read_text(encoding="utf-8")
+    assert text.count("\\includegraphics[") == 1
+    assert "height=0.42\\textheight,keepaspectratio" in text
+
+
+def test_pdf_section_cleanup_preserves_inline_figure_references():
+    cpr = CanonicalPaperRepresentation(
+        title="Inline refs",
+        authors=["Alice"],
+        sections=[
+            Section(
+                title="Method",
+                content=(
+                    "The workflow is summarized in Figure 1 before we move into evaluation.\n"
+                    "Figure 1. Workflow overview for the validation pipeline.\n"
+                    "TABLE II MAXIMUM RSSI VALUES ACROSS DEVICES\n"
+                    "The remaining paragraph should stay intact."
+                ),
+            )
+        ],
+    )
+    cleaned = _clean_section_content(cpr)
+    content = cleaned.sections[0].content
+    assert "The workflow is summarized in Figure 1 before we move into evaluation." in content
+    assert "The remaining paragraph should stay intact." in content
+    assert "Figure 1. Workflow overview" not in content
+    assert "TABLE II MAXIMUM RSSI VALUES" not in content
 
 
 def test_pdf_render_preserves_paragraph_breaks_for_acm(tmp_path: Path):

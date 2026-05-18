@@ -194,9 +194,9 @@ def _render_body(cpr: CanonicalPaperRepresentation, target_format: str, escape_b
         )
         for artifact in equation_artifacts
     }
-    remaining_figures = list(cpr.figures)
-    remaining_tables = list(cpr.tables)
-    remaining_equations = list(equation_artifacts)
+    remaining_figures = _dedupe_figures_for_render(cpr.figures)
+    remaining_tables = _dedupe_tables_for_render(cpr.tables)
+    remaining_equations = _dedupe_artifacts_for_render(equation_artifacts)
     preserve_float_context = not escape_body
     for section in cpr.sections:
         title = _map_section_title(section.title, target_format)
@@ -647,7 +647,7 @@ def _render_figures(figures) -> str:
             seen_paths.add(fig.path)
         asset_block = "% Figure asset unavailable from PDF ingest"
         if fig.path:
-            asset_block = f"\\includegraphics[width=\\linewidth]{{{fig.path}}}"
+            asset_block = f"\\includegraphics[{_graphics_options('figure')}]{{{fig.path}}}"
         chunks.append(
             f"\\begin{{figure}}[{fig.placement}]\n"
             f"\\centering\n"
@@ -666,11 +666,12 @@ def _render_tables(tables) -> str:
         if table.label and table.label in seen_labels:
             continue
         seen_labels.add(table.label)
+        table_latex = _constrain_table_includegraphics(table.latex)
         chunks.append(
             f"\\begin{{table}}[{table.placement}]\n"
             f"\\caption{{{table.caption}}}\n"
             f"\\label{{{table.label}}}\n"
-            f"{table.latex}\n"
+            f"{table_latex}\n"
             f"\\end{{table}}"
         )
     return "\n\n".join(chunks)
@@ -678,16 +679,99 @@ def _render_tables(tables) -> str:
 
 def _render_equation_artifacts(artifacts) -> str:
     chunks: list[str] = []
+    seen_paths: set[str] = set()
     for artifact in artifacts:
         path = artifact.get("path", "")
         if not path:
             continue
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
         chunks.append(
             "\\begin{center}\n"
-            f"\\includegraphics[width=0.72\\linewidth]{{{path}}}\n"
+            f"\\includegraphics[{_graphics_options('equation')}]{{{path}}}\n"
             "\\end{center}"
         )
     return "\n\n".join(chunks)
+
+
+def _graphics_options(kind: str) -> str:
+    """Constrain recovered PDF crops so they cannot spill off the output page."""
+    if kind == "equation":
+        return r"width=0.72\linewidth,height=0.16\textheight,keepaspectratio"
+    if kind == "table":
+        return r"width=\linewidth,height=0.34\textheight,keepaspectratio"
+    return r"width=\linewidth,height=0.42\textheight,keepaspectratio"
+
+
+def _constrain_table_includegraphics(latex: str) -> str:
+    text = str(latex or "")
+    if "\\includegraphics" not in text or "height=" in text:
+        return text
+    return re.sub(
+        r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}",
+        lambda m: f"\\includegraphics[{_graphics_options('table')}]{{{m.group(1)}}}",
+        text,
+    )
+
+
+def _dedupe_figures_for_render(figures) -> list:
+    deduped: list = []
+    seen_labels: set[str] = set()
+    seen_paths: set[str] = set()
+    for fig in figures:
+        label = str(getattr(fig, "label", "") or "")
+        path = str(getattr(fig, "path", "") or "")
+        if label and label in seen_labels:
+            continue
+        if path and path in seen_paths:
+            continue
+        if label:
+            seen_labels.add(label)
+        if path:
+            seen_paths.add(path)
+        deduped.append(fig)
+    return deduped
+
+
+def _dedupe_tables_for_render(tables) -> list:
+    deduped: list = []
+    seen_labels: set[str] = set()
+    seen_latex: set[str] = set()
+    for table in tables:
+        label = str(getattr(table, "label", "") or "")
+        latex = re.sub(r"\s+", " ", str(getattr(table, "latex", "") or "")).strip()
+        if label and label in seen_labels:
+            continue
+        if latex and latex in seen_latex:
+            continue
+        if label:
+            seen_labels.add(label)
+        if latex:
+            seen_latex.add(latex)
+        deduped.append(table)
+    return deduped
+
+
+def _dedupe_artifacts_for_render(artifacts) -> list:
+    deduped: list = []
+    seen_labels: set[str] = set()
+    seen_paths: set[str] = set()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        label = str(artifact.get("label", "") or "")
+        path = str(artifact.get("path", "") or "")
+        if label and label in seen_labels:
+            continue
+        if path and path in seen_paths:
+            continue
+        if label:
+            seen_labels.add(label)
+        if path:
+            seen_paths.add(path)
+        deduped.append(artifact)
+    return deduped
 
 
 def _inject_artifacts(content: str, artifacts: list[dict[str, str]], escape_body: bool) -> str:

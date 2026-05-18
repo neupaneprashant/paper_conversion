@@ -157,6 +157,43 @@ def _make_pdf_with_vector_figure(pdf_path: Path) -> Path:
     return pdf_path
 
 
+def _make_pdf_with_uncaptioned_page_one_image(pdf_path: Path) -> Path:
+    first_image = pdf_path.with_name("uncaptioned_page1.png")
+    second_image = pdf_path.with_name("captioned_page2.png")
+    for image_path, color in [(first_image, (0, 0, 255)), (second_image, (255, 0, 0))]:
+        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 220, 160), False)
+        pix.set_rect(pix.irect, color)
+        pix.save(str(image_path))
+
+    doc = fitz.open()
+    page1 = doc.new_page(width=595, height=842)
+    page1.insert_text(
+        (72, 72),
+        "Page One Decorative Image Paper\n"
+        "Abstract\n"
+        "This abstract describes the paper and provides enough words for parsing.\n"
+        "I. INTRODUCTION\n"
+        "This first page has an image without a figure caption.",
+        fontsize=12,
+    )
+    page1.insert_image(fitz.Rect(72, 180, 292, 340), filename=str(first_image))
+
+    page2 = doc.new_page(width=595, height=842)
+    page2.insert_text(
+        (72, 72),
+        "II. METHOD\n"
+        "This section explains the method and references Figure 1 for the overview.\n"
+        "Figure 1. Overview validation entity with ambient devices and RSSI workflow.\n"
+        "REFERENCES\n"
+        "[1] Demo reference entry for regression coverage.",
+        fontsize=12,
+    )
+    page2.insert_image(fitz.Rect(72, 220, 292, 380), filename=str(second_image))
+    doc.save(str(pdf_path))
+    doc.close()
+    return pdf_path
+
+
 def _make_pdf_with_unnumbered_sections(pdf_path: Path) -> Path:
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
@@ -216,8 +253,8 @@ def test_pdf_embedded_figures_preserved_when_present(tmp_path: Path):
     result = route_and_run("ieee", "acm", sample, tmp_path / "job4")
     converted_dir = Path(result.converted_source_path)
     converted_main = (converted_dir / "main.tex").read_text(encoding="utf-8")
-    assert "\\includegraphics[width=\\linewidth]{figures/" in converted_main
-    assert converted_main.count("\\includegraphics[width=\\linewidth]{figures/") == 1
+    assert "\\includegraphics[width=\\linewidth,height=0.42\\textheight,keepaspectratio]{figures/" in converted_main
+    assert converted_main.count("\\includegraphics[width=\\linewidth,height=0.42\\textheight,keepaspectratio]{figures/") == 1
     assert any((converted_dir / "figures").glob("*"))
     assert "\\begin{thebibliography}" in converted_main
 
@@ -227,9 +264,18 @@ def test_pdf_vector_figures_are_cropped_when_no_embedded_image(tmp_path: Path):
     result = route_and_run("ieee", "acm", sample, tmp_path / "job_vector")
     converted_dir = Path(result.converted_source_path)
     converted_main = (converted_dir / "main.tex").read_text(encoding="utf-8")
-    assert "\\includegraphics[width=\\linewidth]{figures/" in converted_main
+    assert "\\includegraphics[width=\\linewidth,height=0.42\\textheight,keepaspectratio]{figures/" in converted_main
     assert "% Figure asset unavailable from PDF ingest" not in converted_main
     assert any((converted_dir / "figures").glob("figure_p*.png"))
+
+
+def test_pdf_caption_uses_image_from_same_page(tmp_path: Path):
+    sample = _make_pdf_with_uncaptioned_page_one_image(tmp_path / "page_pairing.pdf")
+    result = route_and_run("ieee", "acm", sample, tmp_path / "job_pairing")
+    converted_dir = Path(result.converted_source_path)
+    converted_main = (converted_dir / "main.tex").read_text(encoding="utf-8")
+    assert "figures/figure_p2_1.png" in converted_main
+    assert "figures/figure_p1_1.png" not in converted_main
 
 
 def test_acm_pdf_with_unnumbered_sections_routes_to_ieee(tmp_path: Path):

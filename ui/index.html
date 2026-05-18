@@ -9,6 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300..700;1,8..60,300..700&family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -602,6 +603,7 @@ const ConverterWidget = ({ accent }) => {
   const [errMsg, setErrMsg] = React.useState('');
   const [isPdf, setIsPdf]   = React.useState(false);
   const fileRef  = React.useRef(null);
+  const folderRef = React.useRef(null);
   const pollRef  = React.useRef(null);
   const progRef  = React.useRef(null);
 
@@ -666,13 +668,13 @@ const ConverterWidget = ({ accent }) => {
 
   React.useEffect(() => () => { clearInterval(pollRef.current); clearInterval(progRef.current); }, []);
 
-  const handleFile = async (file) => {
+  const uploadManuscript = async (file, displayName) => {
     if (!file) return;
     const ext = file.name.split('.').pop().toLowerCase();
     if (!['pdf','tex','zip'].includes(ext)) { alert('Please upload a PDF, .tex, or ZIP file.'); return; }
 
     setIsPdf(ext === 'pdf');
-    setFilename(file.name);
+    setFilename(displayName || file.name);
     setStage('uploading');
     setProgress(0);
     setJobId(null);
@@ -695,6 +697,42 @@ const ConverterWidget = ({ accent }) => {
       stopProgress(0);
       setStage('error');
       setErrMsg(err.message);
+    }
+  };
+
+  const handleFile = async (file) => uploadManuscript(file, file?.name);
+
+  const zipFolderFiles = async (files) => {
+    const selected = Array.from(files || []);
+    if (!selected.length) return null;
+    if (!window.JSZip) {
+      throw new Error('Folder upload support did not load. Please zip the folder manually and upload the .zip file.');
+    }
+    const zip = new JSZip();
+    let root = 'latex-project';
+    for (const file of selected) {
+      const rel = file.webkitRelativePath || file.name;
+      const first = rel.split('/')[0];
+      if (first) { root = first; break; }
+    }
+    for (const file of selected) {
+      const rel = file.webkitRelativePath || `${root}/${file.name}`;
+      if (!rel || file.name === '.DS_Store') continue;
+      zip.file(rel, file);
+    }
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    return new File([blob], `${root}.zip`, { type: 'application/zip' });
+  };
+
+  const handleFolder = async (files) => {
+    try {
+      const zipFile = await zipFolderFiles(files);
+      if (zipFile) await uploadManuscript(zipFile, `${zipFile.name} (folder upload)`);
+    } catch (err) {
+      setStage('error');
+      setErrMsg(err.message);
+    } finally {
+      if (folderRef.current) folderRef.current.value = '';
     }
   };
 
@@ -752,12 +790,13 @@ const ConverterWidget = ({ accent }) => {
           {/* Drop zone */}
           <input ref={fileRef} type="file" accept=".pdf,.tex,.zip" style={{ display:'none' }}
             onChange={e => { if (e.target.files[0]) handleFile(e.target.files[0]); }} />
+          <input ref={folderRef} type="file" webkitdirectory="true" directory="true" multiple style={{ display:'none' }}
+            onChange={e => { if (e.target.files.length) handleFolder(e.target.files); }} />
 
           <div
             onDragOver={e => { e.preventDefault(); if (stage === 'idle') setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
             onDrop={e => { e.preventDefault(); setDragOver(false); if (stage === 'idle' && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); }}
-            onClick={() => stage === 'idle' && fileRef.current?.click()}
             style={{
               flex: 1, minHeight: 220,
               border: `2px dashed ${dragOver ? accent : T.rule}`,
@@ -775,8 +814,22 @@ const ConverterWidget = ({ accent }) => {
               <div style={{
                 fontFamily: "'Source Serif 4', serif", fontSize: 20,
                 fontWeight: 500, color: T.ink, textAlign: 'center',
-              }}>Drop a manuscript, or click to select</div>
-              <Folio>.tex · .zip · .pdf · 6.3mb max · anonymised on upload</Folio>
+              }}>Drop a manuscript, or choose a file or folder</div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button type="button" onClick={() => fileRef.current?.click()} style={{
+                  padding: '10px 14px', background: T.ink, color: T.paper,
+                  border: `1px solid ${T.ink}`, cursor: 'pointer',
+                  fontFamily: "'IBM Plex Mono', monospace", fontSize: 10,
+                  letterSpacing: '0.12em', textTransform: 'uppercase',
+                }}>Select file</button>
+                <button type="button" onClick={() => folderRef.current?.click()} style={{
+                  padding: '10px 14px', background: 'transparent', color: T.ink,
+                  border: `1px solid ${T.ink}`, cursor: 'pointer',
+                  fontFamily: "'IBM Plex Mono', monospace", fontSize: 10,
+                  letterSpacing: '0.12em', textTransform: 'uppercase',
+                }}>Select folder</button>
+              </div>
+              <Folio>.tex · .zip · .pdf · folders auto-zipped · 10 MB PDF / 50 MB ZIP</Folio>
             </>)}
 
             {stage !== 'idle' && (
