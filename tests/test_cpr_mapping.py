@@ -100,8 +100,9 @@ def test_pdf_table_asset_is_reinserted_near_anchor(tmp_path: Path):
     out = tmp_path / "out"
     render_cpr_to_target(cpr, "acm", out)
     text = (out / "main.tex").read_text(encoding="utf-8")
-    assert "\\includegraphics[width=\\linewidth,height=0.34\\textheight,keepaspectratio]{artifacts/tables/table_p4_1.png}" in text
-    assert text.index("The validation performance rate was measured carefully.") < text.index("\\begin{table}[H]")
+    assert "\\begin{table*}[!t]" in text
+    assert "\\includegraphics[width=\\textwidth,height=0.30\\textheight,keepaspectratio]{artifacts/tables/table_p4_1.png}" in text
+    assert text.index("The validation performance rate was measured carefully.") < text.index("\\begin{table*}[!t]")
 
 
 def test_pdf_references_render_as_thebibliography_when_requested(tmp_path: Path):
@@ -234,8 +235,50 @@ def test_pdf_artifact_text_is_removed_when_visual_fallback_is_inserted(tmp_path:
     text = (out / "main.tex").read_text(encoding="utf-8")
     assert "TABLE III MAXIMUM OF 60 RSSI VALUES RESULTS Actual points Estimated points Difference" not in text
     assert "Equation block x = y + z (1)" not in text
-    assert "\\includegraphics[width=\\linewidth,height=0.34\\textheight,keepaspectratio]{artifacts/tables/table_p4_1.png}" in text
+    assert "\\includegraphics[width=\\textwidth,height=0.30\\textheight,keepaspectratio]{artifacts/tables/table_p4_1.png}" in text
     assert "\\includegraphics[width=0.72\\linewidth,height=0.16\\textheight,keepaspectratio]{artifacts/equations/equation_p4_1.png}" in text
+
+
+def test_pdf_visual_table_residue_is_scrubbed_from_partial_overlap(tmp_path: Path):
+    cpr = CanonicalPaperRepresentation(
+        title="Partial Table Cleanup",
+        authors=["Alice"],
+        sections=[
+            Section(
+                title="Results",
+                content=(
+                    "The comparison was run carefully. THE CLIENT AND SERVER SIDE. "
+                    "THESE ARE AVERAGE TIMES OVER SEVERAL TRIALS. Length Client Server "
+                    "10,000 1 0.8 100,000 3.3 4.6 As seen in , the server takes longer."
+                ),
+            )
+        ],
+        tables=[
+            Table(
+                label="tab:i",
+                caption="A TABLE SHOWING THE DIFFERENCE IN TIME SPENT GENERATING HASH CHAINS",
+                latex="\\centering\n\\includegraphics[width=\\linewidth]{artifacts/tables/table_p5_1.png}",
+                placement="H",
+            )
+        ],
+        metadata={
+            "ingest_mode": "pdf",
+            "table_section_map": {"tab:i": "Results"},
+            "table_text_map": {
+                "tab:i": (
+                    "TABLE I A TABLE SHOWING THE DIFFERENCE IN TIME SPENT GENERATING HASH "
+                    "CHAINS ON THE CLIENT AND SERVER SIDE. THESE ARE AVERAGE TIMES OVER SEVERAL TRIALS. "
+                    "Length Client Server 10,000 1 0.8 100,000 3.3 4.6"
+                )
+            },
+        },
+    )
+    out = tmp_path / "out"
+    render_cpr_to_target(cpr, "acm", out)
+    text = (out / "main.tex").read_text(encoding="utf-8")
+    assert "THE CLIENT AND SERVER SIDE" not in text
+    assert "10,000 1 0.8" not in text
+    assert "As seen in ," not in text
 
 
 def test_pdf_equation_residue_removes_multiply_x_variant(tmp_path: Path):
@@ -621,6 +664,7 @@ def test_pdf_table_region_detects_same_line_caption():
         "Actual points Estimated points Difference",
         "1.0 1.2 0.2",
     ]
+    assert regions[0]["visual_bbox"].y0 > regions[0]["bbox"].y0
     assert regions[0]["anchor_text"] == "The results are summarized below."
 
 
@@ -630,6 +674,34 @@ def test_pdf_table_region_ignores_body_reference_sentence():
         {"text": "The following paragraph is normal body text.", "bbox": (72.0, 146.0, 330.0, 158.0)},
     ]
     assert _detect_table_regions(lines, 595.0) == []
+
+
+def test_pdf_table_region_extends_caption_and_drops_trailing_body():
+    lines = [
+        {"text": "TABLE I A TABLE SHOWING THE DIFFERENCE IN TIME SPENT GENERATING HASH", "bbox": (312.0, 52.0, 563.0, 64.0)},
+        {"text": "CHAINS ON THE CLIENT AND SERVER SIDE. THESE ARE AVERAGE TIMES", "bbox": (312.0, 66.0, 563.0, 78.0)},
+        {"text": "OVER SEVERAL TRIALS.", "bbox": (350.0, 80.0, 510.0, 92.0)},
+        {"text": "Length", "bbox": (350.0, 108.0, 390.0, 120.0)},
+        {"text": "Client", "bbox": (420.0, 108.0, 460.0, 120.0)},
+        {"text": "10,000 1 0.8", "bbox": (350.0, 136.0, 500.0, 148.0)},
+        {"text": "100,000 3.3 4.6", "bbox": (350.0, 154.0, 510.0, 166.0)},
+        {"text": "concurrently (i.e., both client and server are running operations", "bbox": (312.0, 178.0, 563.0, 190.0)},
+    ]
+    regions = _detect_table_regions(lines, 612.0)
+    assert len(regions) == 1
+    assert regions[0]["caption"] == (
+        "A TABLE SHOWING THE DIFFERENCE IN TIME SPENT GENERATING HASH "
+        "CHAINS ON THE CLIENT AND SERVER SIDE. THESE ARE AVERAGE TIMES OVER SEVERAL TRIALS"
+    )
+    assert regions[0]["data_lines"][-1] == "100,000 3.3 4.6"
+    assert "concurrently" not in " ".join(regions[0]["data_lines"])
+
+
+def test_pdf_table_region_rejects_lowercase_fragment_after_table_number():
+    lines = [
+        {"text": "TABLE II, these systems include both single-factor and two-", "bbox": (312.0, 708.0, 563.0, 720.0)},
+    ]
+    assert _detect_table_regions(lines, 612.0) == []
 
 
 def test_pdf_figure_is_attached_to_matching_section_without_explicit_map(tmp_path: Path):

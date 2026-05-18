@@ -478,9 +478,13 @@ def _extract_page_level_visuals(
             label = region["label"]
             image_rel = ""
             if table_root is not None:
+                crop_bbox = _expand_table_crop_bbox(
+                    page,
+                    region.get("visual_bbox") or region["bbox"],
+                )
                 image_rel = _crop_region(
                     page,
-                    region["bbox"],
+                    crop_bbox,
                     table_root / f"table_p{page_index + 1}_{table_idx}.png",
                     rel_prefix="artifacts/tables",
                 )
@@ -493,7 +497,10 @@ def _extract_page_level_visuals(
             tables.append(Table(label=label, caption=_cleanup(caption), latex=latex, placement="H"))
             table_section_map[label] = region["section_title"]
             table_anchor_map[label] = region["anchor_text"]
-            table_text_map[label] = region["raw_text"]
+            raw_text = region["raw_text"]
+            if image_rel and crop_bbox.width > page.rect.width * 0.62:
+                raw_text = _cleanup(f"{raw_text} {_table_crop_text(lines, crop_bbox)}")
+            table_text_map[label] = raw_text
 
         for eq_idx, equation in enumerate(_detect_equation_regions(lines, page.rect.width), start=1):
             if equation_root is None:
@@ -731,20 +738,29 @@ def _detect_table_regions(lines: list[dict], page_width: float) -> list[dict]:
                 break
             end += 1
         if heading["caption"]:
-            caption, caption_idx = heading["caption"], 0
+            caption, caption_idx = _extend_table_caption_from_index(region_lines, heading["caption"], 0)
         else:
             caption, caption_idx = _select_table_caption(region_lines, label, page_width)
-        data_lines = [line["text"] for line in region_lines[caption_idx + 1:]]
+            caption, caption_idx = _extend_table_caption_from_index(region_lines, caption, caption_idx)
+        data_line_objs = region_lines[caption_idx + 1:]
+        while data_line_objs and _looks_like_table_trailing_body_line(data_line_objs[-1]["text"]):
+            data_line_objs = data_line_objs[:-1]
+        data_lines = [line["text"] for line in data_line_objs]
+        if len(data_lines) < 2:
+            idx = end
+            continue
         bbox = _union_bboxes([line["bbox"] for line in region_lines])
+        visual_bbox = _union_bboxes([line["bbox"] for line in data_line_objs])
         regions.append(
             {
                 "label": label,
                 "caption": caption,
                 "bbox": bbox,
+                "visual_bbox": visual_bbox,
                 "data_lines": data_lines,
                 "section_title": section_title,
                 "anchor_text": anchor_text,
-                "raw_text": _cleanup(" ".join(line["text"] for line in region_lines)),
+                "raw_text": _cleanup(" ".join([caption, *data_lines])),
             }
         )
         idx = end
@@ -755,7 +771,7 @@ def _parse_table_heading(text: str) -> dict[str, str] | None:
     match = re.match(r"^TABLE\s+([IVXLC]+|\d+)\s*(.*)$", text.strip(), flags=re.I)
     if not match:
         return None
-    caption = match.group(2).strip(" .:-")
+    caption = match.group(2).strip(" .:-,")
     if caption and not _looks_like_table_caption_text(caption):
         return None
     return {"number": match.group(1), "caption": caption}
@@ -765,6 +781,8 @@ def _looks_like_table_caption_text(text: str) -> bool:
     compact = text.strip()
     if len(compact) < 8:
         return False
+    if not re.match(r"^[A-Z0-9]", compact):
+        return False
     lower = compact.lower()
     if lower.startswith(("shows ", "summarizes ", "presents ", "lists ", "reports ", "is ", "are ")):
         return False
@@ -773,6 +791,59 @@ def _looks_like_table_caption_text(text: str) -> bool:
     if compact[0].islower():
         return False
     return True
+
+
+def _extend_table_caption_from_index(region_lines: list[dict], caption: str, caption_idx: int) -> tuple[str, int]:
+    caption_parts = [caption.strip()]
+    for idx, line in enumerate(region_lines[caption_idx + 1:], start=caption_idx + 1):
+        text = line["text"].strip()
+        if not text:
+            break
+        if _looks_like_table_data_line(text) or _looks_like_table_grid_header(text):
+            break
+        if _looks_like_table_caption_continuation(text):
+            caption_parts.append(text.strip(" .:-"))
+            caption_idx = idx
+            continue
+        break
+    return _cleanup(" ".join(part for part in caption_parts if part)), caption_idx
+
+
+def _looks_like_table_grid_header(text: str) -> bool:
+    compact = text.strip()
+    if not compact:
+        return False
+    if len(compact.split()) <= 6 and re.search(r"\b(?:Scheme|Client|Server|Time|Length|Password|Biometric|Phone)\b", compact):
+        return True
+    return False
+
+
+def _looks_like_table_caption_continuation(text: str) -> bool:
+    compact = text.strip()
+    if len(compact) < 6:
+        return False
+    if _looks_like_table_data_line(compact) or _looks_like_table_grid_header(compact):
+        return False
+    letters = [ch for ch in compact if ch.isalpha()]
+    if not letters:
+        return False
+    uppercase = sum(1 for ch in letters if ch.isupper())
+    return uppercase / len(letters) >= 0.75
+
+
+def _looks_like_table_trailing_body_line(text: str) -> bool:
+    compact = text.strip()
+    if not compact:
+        return True
+    if _looks_like_table_data_line(compact):
+        return False
+    if _looks_like_table_grid_header(compact):
+        return False
+    if compact[0].islower():
+        return True
+    words = compact.split()
+    lowercase_words = sum(1 for word in words if any(ch.islower() for ch in word))
+    return len(words) >= 5 and lowercase_words >= max(3, len(words) // 2)
 
 
 def _detect_equation_regions(lines: list[dict], page_width: float) -> list[dict]:
@@ -1206,6 +1277,48 @@ def _crop_region(page: fitz.Page, bbox: fitz.Rect, out_path: Path, rel_prefix: s
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, alpha=False)
     pix.save(out_path)
     return f"{rel_prefix}/{out_path.name}".replace("\\", "/")
+
+
+def _expand_table_crop_bbox(page: fitz.Page, bbox: fitz.Rect) -> fitz.Rect:
+    """Expand visual table crops to include ruling lines and wide table edges."""
+    region = fitz.Rect(bbox)
+    x0 = region.x0
+    x1 = region.x1
+    vertical_pad = 8.0
+    for drawing in page.get_drawings():
+        rect = drawing.get("rect")
+        if rect is None:
+            continue
+        if rect.y1 < region.y0 - vertical_pad or rect.y0 > region.y1 + vertical_pad:
+            continue
+        if rect.x1 < region.x0 - 12.0 or rect.x0 > region.x1 + 12.0:
+            continue
+        if rect.width < max(24.0, region.width * 0.35) and rect.height < 2.0:
+            continue
+        x0 = min(x0, rect.x0)
+        x1 = max(x1, rect.x1)
+    expanded = fitz.Rect(x0, max(0.0, region.y0 - 2.0), x1, min(page.rect.height, region.y1 + 2.0))
+    if expanded.width > page.rect.width * 0.62:
+        expanded.x0 = min(expanded.x0, 24.0)
+        expanded.x1 = max(expanded.x1, page.rect.width - 24.0)
+    return expanded
+
+
+def _table_crop_text(lines: list[dict], bbox: fitz.Rect) -> str:
+    y0 = bbox.y0 - 4.0
+    y1 = bbox.y1 + 4.0
+    in_band: list[str] = []
+    for line in lines:
+        line_bbox = line["bbox"]
+        if line_bbox[3] < y0 or line_bbox[1] > y1:
+            continue
+        text = line["text"].strip()
+        if not text:
+            continue
+        if re.search(r"Authorized licensed use|Downloaded on|IEEE .*Conference", text, re.I):
+            continue
+        in_band.append(text)
+    return _cleanup(" ".join(in_band))
 
 
 def _merge_page_level_visuals(

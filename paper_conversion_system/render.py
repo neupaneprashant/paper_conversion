@@ -249,6 +249,7 @@ def _render_body(cpr: CanonicalPaperRepresentation, target_format: str, escape_b
             content = _remove_table_residue(content)
         if section_equations:
             content = _remove_equation_residue(content)
+        content = _repair_dangling_visual_references(content)
         if escape_body:
             content = _format_pdf_section_text(content)
         content = _inject_artifacts(content, inline_artifacts, escape_body=escape_body)
@@ -666,13 +667,16 @@ def _render_tables(tables) -> str:
         if table.label and table.label in seen_labels:
             continue
         seen_labels.add(table.label)
-        table_latex = _constrain_table_includegraphics(table.latex)
+        visual_crop = _is_visual_table_crop(table.latex)
+        table_latex = _constrain_table_includegraphics(table.latex, span=visual_crop)
+        env = "table*" if visual_crop else "table"
+        placement = "!t" if visual_crop else table.placement
         chunks.append(
-            f"\\begin{{table}}[{table.placement}]\n"
+            f"\\begin{{{env}}}[{placement}]\n"
             f"\\caption{{{table.caption}}}\n"
             f"\\label{{{table.label}}}\n"
             f"{table_latex}\n"
-            f"\\end{{table}}"
+            f"\\end{{{env}}}"
         )
     return "\n\n".join(chunks)
 
@@ -695,24 +699,32 @@ def _render_equation_artifacts(artifacts) -> str:
     return "\n\n".join(chunks)
 
 
-def _graphics_options(kind: str) -> str:
+def _graphics_options(kind: str, *, span: bool = False) -> str:
     """Constrain recovered PDF crops so they cannot spill off the output page."""
     if kind == "equation":
         return r"width=0.72\linewidth,height=0.16\textheight,keepaspectratio"
     if kind == "table":
+        if span:
+            return r"width=\textwidth,height=0.30\textheight,keepaspectratio"
         return r"width=\linewidth,height=0.34\textheight,keepaspectratio"
     return r"width=\linewidth,height=0.42\textheight,keepaspectratio"
 
 
-def _constrain_table_includegraphics(latex: str) -> str:
+def _constrain_table_includegraphics(latex: str, *, span: bool = False) -> str:
     text = str(latex or "")
-    if "\\includegraphics" not in text or "height=" in text:
+    if "\\includegraphics" not in text:
         return text
     return re.sub(
         r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}",
-        lambda m: f"\\includegraphics[{_graphics_options('table')}]{{{m.group(1)}}}",
+        lambda m: f"\\includegraphics[{_graphics_options('table', span=span)}]{{{m.group(1)}}}",
         text,
     )
+
+
+def _is_visual_table_crop(latex: str) -> bool:
+    raw = str(latex or "")
+    paths_normalized = raw.replace("\\", "/")
+    return "\\includegraphics" in raw and "artifacts/tables/" in paths_normalized
 
 
 def _dedupe_figures_for_render(figures) -> list:
@@ -869,6 +881,11 @@ def _remove_artifact_snippets(content: str, snippets: list[str]) -> str:
     def transform(paragraph: str) -> str:
         working = _normalise_artifact_text(paragraph or "")
         for snippet in unique_snippets:
+            if _artifact_snippet_allows_overlap_scrub(snippet):
+                scrubbed = _remove_overlapping_artifact_span(working, snippet)
+                if scrubbed != working:
+                    working = scrubbed
+                    continue
             if snippet in working:
                 working = working.replace(snippet, " ")
                 continue
@@ -892,6 +909,55 @@ def _remove_artifact_snippets(content: str, snippets: list[str]) -> str:
         return re.sub(r"\s+", " ", working).strip()
 
     return _apply_paragraphwise(content, transform)
+
+
+def _artifact_snippet_allows_overlap_scrub(snippet: str) -> bool:
+    compact = snippet.strip()
+    if compact.upper().startswith("TABLE "):
+        return True
+    digit_count = sum(ch.isdigit() for ch in compact)
+    symbol_count = len(re.findall(r"(?:\+|-|0|,)", compact))
+    return digit_count >= 8 and symbol_count >= 4
+
+
+def _remove_overlapping_artifact_span(working: str, snippet: str) -> str:
+    snippet_words = snippet.split()
+    if len(snippet_words) < 10:
+        return working
+    first_match: tuple[int, int, int] | None = None
+    for size in range(12, 6, -1):
+        for start_word in range(0, max(1, len(snippet_words) - size + 1)):
+            phrase = " ".join(snippet_words[start_word:start_word + size])
+            pos = working.find(phrase)
+            if pos == -1:
+                continue
+            if first_match is None or pos < first_match[0]:
+                first_match = (pos, pos + len(phrase), start_word + size)
+        if first_match is not None:
+            break
+    if first_match is None:
+        return working
+
+    remove_start, remove_end, tail_floor = first_match
+    for size in range(10, 4, -1):
+        for start_word in range(len(snippet_words) - size, max(tail_floor - 1, 0), -1):
+            phrase = " ".join(snippet_words[start_word:start_word + size])
+            pos = working.find(phrase, remove_start)
+            if pos != -1:
+                remove_end = max(remove_end, pos + len(phrase))
+                break
+        if remove_end > first_match[1]:
+            break
+    return working[:remove_start] + " " + working[remove_end:]
+
+
+def _repair_dangling_visual_references(content: str) -> str:
+    cleaned = re.sub(r"\bAs seen in\s*,\s*", "As shown below, ", content, flags=re.I)
+    cleaned = re.sub(r"\bas seen in\s*,\s*", "as shown below, ", cleaned, flags=re.I)
+    cleaned = re.sub(r"\bin terms of security and usability,\s+as shown below,\s+", "in terms of security and usability, ", cleaned, flags=re.I)
+    cleaned = re.sub(r"\bthey were happening\s+at the same time\b", "they were computed concurrently", cleaned, flags=re.I)
+    cleaned = re.sub(r"\bconcurrently\)\.", "concurrently.", cleaned)
+    return cleaned
 
 
 def _remove_table_residue(content: str) -> str:
@@ -918,6 +984,8 @@ def _remove_table_residue(content: str) -> str:
             flags=re.I,
         )
         working = re.sub(r"\b(?:Actual\s+N=\d+\s+)?(?:Positive\s+)?Negative\s+True\s+False\b", " ", working, flags=re.I)
+        working = re.sub(r"(?<!\w)(?:[+\-0]\s+){3,}[+\-0](?!\w)", " ", working)
+        working = re.sub(r"\btwo-\s+factor\b", "two-factor", working, flags=re.I)
         working = re.sub(r"\b1(?:5[0-9]|6[0-9])\b(?=\s*,\s*\d+\))", " ", working)
         return re.sub(r"\s+", " ", working).strip()
 

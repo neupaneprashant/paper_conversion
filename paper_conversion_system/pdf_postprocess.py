@@ -243,10 +243,14 @@ def _extract_figures_and_tables(cpr: CanonicalPaperRepresentation) -> CanonicalP
             figures.append(Figure(label=label, caption=caption, path=""))
             figure_section_map[label] = section.title
         for m in re.finditer(r"TABLE\s+([IVXLC0-9]+)\s+([^\n]{0,120})", section.content, flags=re.I):
-            caption = (m.group(2) or "").strip(" .:-")
+            caption = (m.group(2) or "").strip(" .:-,")
             if not caption or len(caption) < 12:
                 continue
             if len(caption.split()) < 3:
+                continue
+            if not re.match(r"^[A-Z0-9]", caption):
+                continue
+            if caption[0].islower():
                 continue
             label = f"tab:{m.group(1).lower()}"
             if any(t.label == label for t in tables):
