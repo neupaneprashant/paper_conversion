@@ -672,15 +672,22 @@ def _render_tables(tables) -> str:
             continue
         seen_labels.add(table.label)
         visual_crop = _is_visual_table_crop(table.latex)
-        table_latex = _constrain_table_includegraphics(table.latex, span=visual_crop)
-        env = "table*" if visual_crop else "table"
-        placement = "!t" if visual_crop else table.placement
+        # Visual table crops were previously emitted as ``table*`` full-width
+        # floats with ``[!t]`` placement. In a two-column ACM layout a
+        # ``table*`` may only land at the top of a page, so a short paper
+        # with several tables pushes every crop onto float-only pages at the
+        # END of the document — wrong for an ACM paper, where a table belongs
+        # beside the paragraph that references it. Render crops as ordinary
+        # single-column ``table`` floats fixed in place with ``[H]`` (the
+        # ``float`` package is loaded) so they stay next to their reference.
+        table_latex = _constrain_table_includegraphics(table.latex, span=False)
+        placement = "H" if visual_crop else table.placement
         chunks.append(
-            f"\\begin{{{env}}}[{placement}]\n"
+            f"\\begin{{table}}[{placement}]\n"
             f"\\caption{{{table.caption}}}\n"
             f"\\label{{{table.label}}}\n"
             f"{table_latex}\n"
-            f"\\end{{{env}}}"
+            f"\\end{{table}}"
         )
     return "\n\n".join(chunks)
 
