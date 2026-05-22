@@ -82,6 +82,13 @@ def parse_pdf_to_cpr(
         cpr.metadata["page_count"] = page_count
         if extracted_images:
             cpr.metadata["extracted_figure_assets"] = extracted_images
+        # Thesis/dissertation PDFs still carry figures and tables. The thesis
+        # text parser only recovers prose, so without this step the page-level
+        # visual crops and embedded image assets would be written to disk but
+        # never attached to the CPR — leaving the rendered output with zero
+        # figures/tables. Merge them in just like the paper-native path does.
+        cpr = _merge_page_level_visuals(cpr, page_figures, page_tables)
+        cpr = _attach_extracted_figure_assets(cpr, extracted_images)
         return enforce_pdf_artifact_contract(cpr)
 
     text_source = raw_text
@@ -308,6 +315,19 @@ def _parse_pdf_with_grobid(
     )
 
 
+def _figure_asset_page(path: str | None) -> int | None:
+    """Return the 1-based source page for a ``figure_p<N>_<M>`` asset path.
+
+    Both the page-level visual crops and the embedded-image extractor encode
+    the originating PDF page in the filename. Recovering it lets us tell when
+    an embedded raster overlaps a page that already has a detected figure.
+    """
+    if not path:
+        return None
+    match = re.search(r"figure_p(\d+)_", path)
+    return int(match.group(1)) if match else None
+
+
 def _attach_extracted_figure_assets(
     cpr: CanonicalPaperRepresentation,
     extracted_images: list[str],
@@ -332,30 +352,52 @@ def _attach_extracted_figure_assets(
         paired += 1
     unused_images = unused_images[paired:]
 
-    # Any leftover images get appended as generic figure entries — but only
-    # when the document has no captioned figures at all (so we never inflate
-    # an already-correct figure list with phantom duplicates).
-    if unused_images and not cpr.figures:
-        for index, image_path in enumerate(unused_images, start=1):
+    # Any leftover images get appended as generic figure entries. We use the
+    # source page number (encoded in the asset filename as ``figure_p<N>_..``)
+    # to decide: if a captioned/page-level figure already exists on that page,
+    # the embedded raster is almost certainly the same visual rendered twice,
+    # so we skip it. Embedded images on pages with no detected figure are
+    # genuine figures whose caption simply wasn't matched (common in theses)
+    # and are recovered. This is more precise than the old "all-or-nothing"
+    # guard, which dropped every embedded figure whenever a single caption
+    # was detected anywhere in the document.
+    if unused_images:
+        # Seed the overlap set only from figures detected *before* this
+        # recovery pass (captioned/page-level crops). We deliberately do not
+        # add recovered pages back in: the embedded-image extractor dedupes
+        # by xref, so two distinct embedded rasters on the same page are two
+        # genuine figures and must both be kept.
+        pages_with_figures = {
+            _figure_asset_page(fig.path) for fig in cpr.figures if fig.path
+        }
+        pages_with_figures.discard(None)
+        recovered = 0
+        skipped = 0
+        next_index = 1
+        for image_path in unused_images:
+            page = _figure_asset_page(image_path)
+            if page is not None and page in pages_with_figures:
+                skipped += 1
+                continue
             cpr.figures.append(
                 Figure(
-                    label=f"fig:extracted{index}",
-                    caption=f"Extracted figure {index}",
+                    label=f"fig:extracted{next_index}",
+                    caption=f"Extracted figure {next_index}",
                     path=image_path,
                     placement="H",
                 )
             )
-        warnings.append(
-            f"No figure captions detected; emitted {len(unused_images)} generic figure entries for embedded images."
-        )
-    elif unused_images:
-        # Keep them noted but do NOT silently inject new figure floats — they
-        # were probably logos, decorative banners, or already-attached images
-        # that survived deduplication.
-        warnings.append(
-            f"Skipped {len(unused_images)} embedded image asset(s) without a matching caption "
-            "to avoid duplicate figure placeholders."
-        )
+            next_index += 1
+            recovered += 1
+        if recovered:
+            warnings.append(
+                f"Recovered {recovered} embedded figure asset(s) that had no detected caption."
+            )
+        if skipped:
+            warnings.append(
+                f"Skipped {skipped} embedded image asset(s) that overlapped a captioned "
+                "figure page to avoid duplicate figure placeholders."
+            )
 
     # Final dedup: collapse any figures that ended up sharing the same image
     # path (keep the entry with the longest caption / a real label).
@@ -1269,25 +1311,60 @@ def _crop_region(page: fitz.Page, bbox: fitz.Rect, out_path: Path, rel_prefix: s
 
 
 def _expand_table_crop_bbox(page: fitz.Page, bbox: fitz.Rect) -> fitz.Rect:
-    """Expand visual table crops to include ruling lines and wide table edges."""
+    """Expand visual table crops to include ruling lines and wide table edges.
+
+    Table rules are frequently drawn as one short segment per column rather
+    than a single full-width line. A single pass that only tests each drawing
+    against the original text region therefore stops at the first column
+    boundary — which clips every column but the first out of the crop.
+
+    Instead we grow the x-range iteratively: each pass folds in any ruling
+    segment that touches the range discovered so far, walking column by
+    column until the range stabilises. Only when no anchoring rules are
+    found at all do we fall back to the old "snap a wide region out to the
+    page margins" heuristic.
+    """
     region = fitz.Rect(bbox)
-    x0 = region.x0
-    x1 = region.x1
     vertical_pad = 8.0
+    horizontal_gap = 14.0  # max gap between adjacent column rule segments
+
+    # Collect candidate ruling/box drawings inside the table's vertical band.
+    candidates: list[fitz.Rect] = []
     for drawing in page.get_drawings():
         rect = drawing.get("rect")
         if rect is None:
             continue
         if rect.y1 < region.y0 - vertical_pad or rect.y0 > region.y1 + vertical_pad:
             continue
-        if rect.x1 < region.x0 - 12.0 or rect.x0 > region.x1 + 12.0:
+        # Skip stray short, thin marks; keep wide rules and tall vertical
+        # rules / box outlines.
+        if rect.width < 24.0 and rect.height < 2.0:
             continue
-        if rect.width < max(24.0, region.width * 0.35) and rect.height < 2.0:
-            continue
-        x0 = min(x0, rect.x0)
-        x1 = max(x1, rect.x1)
+        candidates.append(rect)
+
+    x0 = region.x0
+    x1 = region.x1
+    changed = True
+    while changed:
+        changed = False
+        for rect in candidates:
+            # Only fold in drawings that touch the range discovered so far,
+            # so the crop walks across adjacent columns without jumping to
+            # unrelated drawings elsewhere on the page.
+            if rect.x1 < x0 - horizontal_gap or rect.x0 > x1 + horizontal_gap:
+                continue
+            if rect.x0 < x0 - 0.1:
+                x0 = rect.x0
+                changed = True
+            if rect.x1 > x1 + 0.1:
+                x1 = rect.x1
+                changed = True
+
+    expanded_by_drawings = (x0 < region.x0 - 0.1) or (x1 > region.x1 + 0.1)
     expanded = fitz.Rect(x0, max(0.0, region.y0 - 2.0), x1, min(page.rect.height, region.y1 + 2.0))
-    if expanded.width > page.rect.width * 0.62:
+    if not expanded_by_drawings and expanded.width > page.rect.width * 0.62:
+        # No ruling lines anchored the true edges — fall back to snapping a
+        # wide-looking region out to the typical page text margins.
         expanded.x0 = min(expanded.x0, 24.0)
         expanded.x1 = max(expanded.x1, page.rect.width - 24.0)
     return expanded
