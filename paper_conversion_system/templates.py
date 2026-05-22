@@ -1,7 +1,10 @@
-IEEE_MAIN_TEMPLATE = r'''\documentclass[conference]{{IEEEtran}}
+IEEE_MAIN_TEMPLATE = r'''{documentclass_line}
 \usepackage{{graphicx}}
 \usepackage{{float}}
+\usepackage{{placeins}}
 \usepackage{{amsmath}}
+{preserved_preamble}
+{extra_preamble}
 \begin{{document}}
 \title{{{title}}}
 \author{{{authors}}}
@@ -16,10 +19,13 @@ IEEE_MAIN_TEMPLATE = r'''\documentclass[conference]{{IEEEtran}}
 \end{{document}}
 '''
 
-ACM_MAIN_TEMPLATE = r'''\documentclass[sigconf]{{acmart}}
+ACM_MAIN_TEMPLATE = r'''{documentclass_line}
 \usepackage{{graphicx}}
 \usepackage{{float}}
+\usepackage{{placeins}}
 \usepackage{{amsmath}}
+{preserved_preamble}
+{extra_preamble}
 \begin{{document}}
 \title{{{title}}}
 {authors}

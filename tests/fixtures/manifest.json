@@ -1,0 +1,33 @@
+[
+  {
+    "id": "arxiv_transformer_ieee",
+    "source_format": "ieee",
+    "target_format": "acm",
+    "input_dir": "arxiv_transformer_ieee"
+  },
+  {
+    "id": "arxiv_gan_ieee",
+    "source_format": "ieee",
+    "target_format": "acm",
+    "input_dir": "arxiv_gan_ieee"
+  },
+  {
+    "id": "arxiv_bnn_ieee",
+    "source_format": "ieee",
+    "target_format": "acm",
+    "input_dir": "arxiv_bnn_ieee"
+  },
+  {
+    "id": "arxiv_graph_acm",
+    "source_format": "acm",
+    "target_format": "ieee",
+    "input_dir": "arxiv_graph_acm"
+  },
+  {
+    "id": "arxiv_diffusion_acm",
+    "source_format": "acm",
+    "target_format": "ieee",
+    "input_dir": "arxiv_diffusion_acm"
+  }
+]
+

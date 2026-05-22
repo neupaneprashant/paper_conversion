@@ -78,6 +78,8 @@ class ValidationSummary:
     template_compliance: str = "unknown"
     citation_compliance: str = "unknown"
     compile_status: str = "not_run"
+    fidelity_score: float | None = None
+    fidelity_details: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -95,6 +97,7 @@ class JobOutput:
     job_id: str
     direction: str
     status: str
+    conversion_method: str | None
     converted_source_path: str | None
     final_pdf_path: str | None
     validation: ValidationSummary
@@ -105,6 +108,7 @@ class JobOutput:
             "job_id": self.job_id,
             "direction": self.direction,
             "status": self.status,
+            "conversion_method": self.conversion_method,
             "converted_source_path": self.converted_source_path,
             "final_pdf_path": self.final_pdf_path,
             "validation": asdict(self.validation),

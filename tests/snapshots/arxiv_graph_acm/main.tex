@@ -1,0 +1,39 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{placeins}
+\usepackage{amsmath}
+\affiliation{\institution{Example University}\country{USA}}
+\email{author@example.edu}
+
+\graphicspath{{./}}
+
+\begin{document}
+\title{Graph Neural Networks: A Lightweight Survey}
+\author{W. Hamilton}
+\maketitle
+\begin{abstract}
+We summarize message passing networks and common training objectives.
+\end{abstract}
+\begin{IEEEkeywords}
+graph neural networks, message passing
+\end{IEEEkeywords}
+\IEEEoverridecommandlockouts
+\section{Introduction}
+Graph neural models exchange information over local neighborhoods.
+
+\FloatBarrier
+\section{Message Passing}
+At layer $l+1$:
+\begin{equation}
+h_v^{(l+1)}=\phi\left(h_v^{(l)},\square_{u\in\mathcal{N}(v)}\psi(h_v^{(l)},h_u^{(l)})\right).
+\end{equation}
+
+\FloatBarrier
+\section{Conclusion}
+Model design is a balance between expressivity and efficiency.
+
+\FloatBarrier
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+\end{document}

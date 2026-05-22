@@ -3,169 +3,1576 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Academic Paper Converter</title>
-  <link rel="stylesheet" href="styles.css" />
-  <script defer src="app.js"></script>
+  <title>Paper Parser · Convert IEEE ↔ ACM</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300..700;1,8..60,300..700&family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body { background: #FBF7EE; color: #1C1714; -webkit-font-smoothing: antialiased; }
+    #root { min-height: 100vh; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #EAE1D0; }
+    ::-webkit-scrollbar-thumb { background: #8A7F73; }
+  </style>
 </head>
 <body>
-  <div class="page">
-    <header class="hero">
-      <div class="badge">AI Agent Workflow</div>
-      <h1>Academic Paper Converter</h1>
-      <p>Transform research papers between ACM and IEEE formats with AI-powered precision.</p>
-    </header>
+<div id="root"></div>
+<script type="text/babel">
 
-    <main class="container">
-      <section id="engine-status" class="status-banner" hidden></section>
+// ─── Tokens ───────────────────────────────────────────────────────────────────
+const T = {
+  cream: '#F4EDE0', creamDeep: '#EAE1D0', paper: '#FBF7EE',
+  ink: '#1C1714', inkSoft: '#3A322C', muted: '#8A7F73',
+  rule: '#D9CDB7', rust: '#B14A2B',
+};
 
-      <section class="card upload-card">
-        <div class="upload-icon">📄</div>
-        <h2>PDF to LaTeX to ACM/IEEE Conversion</h2>
-        <p>Upload a PDF paper or LaTeX project. The system will extract content, generate LaTeX source, and convert to your target format.</p>
-        <div class="upload-meta">Support: PDF files or LaTeX project folders · End-to-end conversion pipeline · Structured reports included</div>
-        <form id="job-form" class="job-form">
-          <div class="input-row">
-            <div class="input-group">
-              <label for="input-path">Input path</label>
-              <input id="input-path" type="text" placeholder="C:\\path\\to\\paper-project" />
-            </div>
-            <button type="button" id="browse-btn" class="browse-btn">📁 Browse</button>
-          </div>
-          <div class="radio-row">
-            <label><input type="radio" name="direction" value="acm:ieee" checked /> ACM → IEEE</label>
-            <label><input type="radio" name="direction" value="ieee:acm" /> IEEE → ACM</label>
-          </div>
-        </form>
-      </section>
+const ACCENTS = [
+  { color: '#B14A2B', label: 'Rust'  },
+  { color: '#5F6B4A', label: 'Sage'  },
+  { color: '#A87C2E', label: 'Ochre' },
+  { color: '#1C1714', label: 'Ink'   },
+  { color: '#6B4A82', label: 'Plum'  },
+  { color: '#2E7D82', label: 'Teal'  },
+];
 
-      <section class="card direction-card">
-        <div class="section-head">
-          <h3>Conversion Direction</h3>
-          <span>Choose one route</span>
-        </div>
-        <div class="direction-grid">
-          <button type="button" class="direction selected" data-direction="acm:ieee">
-            <div>
-              <strong>ACM → IEEE</strong>
-              <span>Convert from ACM format to IEEE</span>
-            </div>
-            <b>⇄</b>
-          </button>
-          <button type="button" class="direction" data-direction="ieee:acm">
-            <div>
-              <strong>IEEE → ACM</strong>
-              <span>Convert from IEEE format to ACM</span>
-            </div>
-            <b>⇄</b>
-          </button>
-        </div>
-      </section>
+// ─── Primitives ───────────────────────────────────────────────────────────────
+const Rule = ({ thick, style }) => (
+  <div style={{ height: thick ? 2 : 1, background: T.ink, width: '100%', ...style }} />
+);
 
-      <section class="card agents-card">
-        <div class="section-head">
-          <h3>Agent Workflow</h3>
-          <span>Specialized pipeline</span>
-        </div>
-        <div class="agent-grid">
-          <div class="agent-panel">
-            <div class="agent-name">April</div>
-            <p>IEEE → ACM specialist using CPR normalization first.</p>
-          </div>
-          <div class="agent-panel">
-            <div class="agent-name">Friday</div>
-            <p>ACM → IEEE specialist using CPR normalization first.</p>
-          </div>
-          <div class="agent-panel">
-            <div class="agent-name">Comp</div>
-            <p>Harmonization, validation, compile orchestration, and final packaging.</p>
-          </div>
-        </div>
-      </section>
+const Folio = ({ children, style }) => (
+  <div style={{
+    fontFamily: "'IBM Plex Mono', monospace", fontSize: 11,
+    letterSpacing: '0.14em', textTransform: 'uppercase', color: T.muted, ...style,
+  }}>{children}</div>
+);
 
-      <section class="card advanced-card">
-        <div class="section-head">
-          <h3>Advanced Checks</h3>
-          <span>Production-quality goals</span>
-        </div>
-        <ul>
-          <li>CPR metadata enrichment: affiliations, notes, CCS, funding, conflicts</li>
-          <li>Deterministic validation of citations, references, and section requirements</li>
-          <li>Compile retries with actionable log snippets</li>
-          <li>Structured reports for conversion, harmonization, validation, and compile</li>
-        </ul>
-      </section>
+// ─── Nav ──────────────────────────────────────────────────────────────────────
+const Nav = ({ accent, onAccentChange }) => (
+  <nav style={{
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '20px 64px 18px',
+    position: 'sticky', top: 0, zIndex: 100,
+    background: T.paper, borderBottom: `1px solid ${T.rule}`,
+  }}>
+    {/* Logo */}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{
+        width: 32, height: 32, borderRadius: '50%', background: T.ink, color: T.paper,
+        display: 'grid', placeItems: 'center',
+        fontFamily: "'Source Serif 4', serif", fontStyle: 'italic', fontSize: 18, fontWeight: 500,
+      }}>P</div>
+      <div style={{
+        fontFamily: "'Source Serif 4', serif", fontSize: 20, fontWeight: 500,
+        letterSpacing: '-0.01em', color: T.ink,
+      }}>Paper Parser</div>
+      <Folio style={{ marginLeft: 4 }}>Est. 2026 · No. 01</Folio>
+    </div>
 
-      <button class="convert-btn" type="submit" form="job-form">Convert Paper</button>
+    {/* Links */}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 36 }}>
+      <div style={{ display: 'flex', gap: 32, fontFamily: "'Spectral', serif", fontSize: 15, color: T.inkSoft }}>
+        {[['How it works','#how-it-works'],['Features','#features'],['Pricing','#pricing'],['FAQ','#faq']].map(([l,h]) => (
+          <a key={l} href={h} style={{ color: 'inherit', textDecoration: 'none' }}>{l}</a>
+        ))}
+      </div>
 
-      <section class="card info-card">
-        <strong>💡 How it works:</strong>
-        <span>
-          <strong>PDF users:</strong> Upload a PDF → Extract content & generate LaTeX → Convert to target format (ACM/IEEE) → Get polished output
-          <br><strong>LaTeX users:</strong> Upload your project folder → Convert between ACM and IEEE formats → Get harmonized, validated, and compiled result
-        </span>
-      </section>
+      {/* Accent swatches */}
+      <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+        {ACCENTS.map(a => (
+          <button key={a.color} title={a.label} onClick={() => onAccentChange(a.color)} style={{
+            width: 14, height: 14, borderRadius: '50%', border: `2px solid ${accent === a.color ? T.ink : 'transparent'}`,
+            background: a.color, cursor: 'pointer', padding: 0, outline: 'none',
+          }} />
+        ))}
+      </div>
 
-      <section class="card info-card" style="background: rgba(203,114,255,0.06); border-color: rgba(203,114,255,0.2);">
-        <strong>🚀 Quick Start:</strong>
-        <div style="margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap;">
-          <button type="button" class="sample-btn"
-                  data-sample-path="./samples/acm_sample"
-                  data-sample-direction="acm:ieee">
-            📁 Load ACM Sample (ACM → IEEE)
-          </button>
-          <button type="button" class="sample-btn"
-                  data-sample-path="./samples/ieee_sample"
-                  data-sample-direction="ieee:acm">
-            📁 Load IEEE Sample (IEEE → ACM)
-          </button>
-        </div>
-        <div style="margin-top: 10px; color: var(--muted); font-size: 0.92rem;">
-          Use Browse to choose your own local PDF or project folder.
-        </div>
-      </section>
+      <a href="#convert" style={{
+        padding: '10px 20px', background: accent, color: T.paper,
+        fontFamily: "'IBM Plex Mono', monospace", fontSize: 11,
+        letterSpacing: '0.12em', textTransform: 'uppercase',
+        border: 'none', cursor: 'pointer', textDecoration: 'none', display: 'inline-block',
+      }}>Convert a paper →</a>
+    </div>
+  </nav>
+);
 
-      <section class="status-grid" id="jobs">
-        <div class="card status-card">
-          <h4>Current Architecture</h4>
-          <p>Scaffolded and runnable locally through Python CLI.</p>
-        </div>
-        <div class="card status-card">
-          <h4>Missing Tooling</h4>
-          <p>LaTeX toolchain and pytest are still needed for full Definition of Done.</p>
-        </div>
-        <div class="card status-card">
-          <h4>Next Step</h4>
-          <p>Connect this UI to a local API and real OpenClaw agent sessions.</p>
-        </div>
-      </section>
-    </main>
+// ─── Page preview miniature ───────────────────────────────────────────────────
+const TextLines = ({ count = 6, seed = 0, compact = false }) => {
+  const WS = [100,92,88,95,78,85,100,90,82,96,72,88,94,80,100,86,76,92,84,98];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: compact ? 2 : 2.5 }}>
+      {Array.from({ length: count }).map((_, i) => {
+        const w = WS[(i + seed) % WS.length];
+        const isPara = i > 0 && (i + seed) % 6 === 0;
+        return isPara
+          ? <div key={i} style={{ height: compact ? 3 : 4 }} />
+          : <div key={i} style={{ height: compact ? 2.5 : 3, background: T.rule, width: `${w}%` }} />;
+      })}
+    </div>
+  );
+};
+
+const MiniFig = ({ label, h = 34 }) => (
+  <div style={{
+    height: h, margin: '5px 0',
+    background: `repeating-linear-gradient(135deg,${T.creamDeep} 0 4px,${T.paper} 4px 8px)`,
+    border: `1px solid ${T.rule}`, display: 'grid', placeItems: 'center',
+  }}>
+    <Folio style={{ fontSize: 7 }}>{label}</Folio>
   </div>
+);
 
-  <!-- File Picker Modal -->
-  <div id="file-picker-modal" class="modal" style="display:none;">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>Browse Folder / Select File</h3>
-        <button type="button" class="modal-close" id="close-picker">&times;</button>
+const PagePreview = ({ variant, accent }) => {
+  const isIeee = variant === 'ieee';
+
+  if (isIeee) return (
+    <div style={{
+      background: T.paper, border: `1px solid ${T.ink}`,
+      padding: '10px 11px 8px', minHeight: 420,
+      boxShadow: `6px 6px 0 -1px ${T.creamDeep}`,
+      fontFamily: "'Spectral', serif", fontSize: 8, lineHeight: 1.3,
+    }}>
+      {/* IEEE running head */}
+      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
+        <Folio style={{ fontSize:6.5 }}>IEEE TRANS. ON DISTRIBUTED SYS. · VOL. XX · NO. Y · 2026</Folio>
+        <Folio style={{ fontSize:6.5 }}>1</Folio>
       </div>
-      <div class="modal-body">
-        <div style="padding:8px;margin-bottom:12px;background:rgba(122,168,255,0.1);border-radius:8px;border-left:4px solid #7aa8ff;color:var(--text);font-size:0.9rem;">
-          📂 Select a PDF file or LaTeX project folder • Double-click to select PDF or navigate folder
+      <div style={{ height:1, background:T.ink, marginBottom:7 }} />
+
+      {/* IEEE title — centered, serif */}
+      <div style={{ textAlign:'center', marginBottom:4 }}>
+        <div style={{ fontFamily:"'Source Serif 4',serif", fontSize:10.5, fontWeight:600, lineHeight:1.25 }}>
+          Adaptive Thermal Regulation in Distributed Edge Compute Clusters
         </div>
-        <div class="picker-shortcuts" id="picker-shortcuts"></div>
-        <div class="picker-toolbar">
-          <button type="button" id="browse-up" class="picker-up-btn">Up</button>
-          <div class="picker-location" id="picker-location"></div>
-        </div>
-        <div class="breadcrumb" id="breadcrumb"></div>
-        <div class="file-list" id="file-list"></div>
       </div>
-      <div class="modal-footer">
-        <button type="button" id="select-item" class="btn-secondary">Use Selected Item</button>
-        <button type="button" id="select-current" class="btn-primary">Use Current Folder</button>
-        <button type="button" id="cancel-picker" class="btn-secondary">Cancel</button>
+
+      {/* IEEE author block — centered, grouped */}
+      <div style={{ textAlign:'center', marginBottom:3 }}>
+        <div style={{ fontSize:7.5, fontStyle:'italic' }}>Alice Chen<sup style={{fontSize:6}}>1</sup>, Marcus Okonkwo<sup style={{fontSize:6}}>1</sup>, Rajan Iyer<sup style={{fontSize:6}}>2</sup></div>
+        <div style={{ fontSize:6.5, color:T.muted, marginTop:1 }}>
+          <sup style={{fontSize:5.5}}>1</sup>Dept. of Computer Science, Institute of Technology · <sup style={{fontSize:5.5}}>2</sup>School of Engineering, State University
+        </div>
+        <div style={{ fontSize:6.5, color:T.muted }}>{'{a.chen, m.okonkwo}@inst.edu · riyer@stateuniv.edu'}</div>
+      </div>
+
+      {/* IEEE abstract — "Abstract—" inline bold-italic */}
+      <div style={{ marginBottom:4 }}>
+        <span style={{ fontSize:7.5, fontWeight:700, fontStyle:'italic' }}>Abstract</span>
+        <span style={{ fontSize:7.5, color:T.muted }}>&mdash;</span>
+        <TextLines count={4} seed={0} compact />
+      </div>
+
+      {/* IEEE index terms */}
+      <div style={{ fontSize:6.5, marginBottom:6 }}>
+        <span style={{ fontWeight:700, fontStyle:'italic' }}>Index Terms</span>
+        <span style={{ color:T.muted }}>&mdash; thermal regulation, edge computing, distributed systems, scheduling</span>
+      </div>
+
+      <div style={{ height:1, background:T.ink, marginBottom:6 }} />
+
+      {/* Two-column body with center rule */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1px 1fr', gap:'0 7px' }}>
+        <div>
+          <div style={{ fontSize:7.5, fontWeight:700, letterSpacing:'0.06em', marginBottom:3 }}>I. INTRODUCTION</div>
+          <TextLines count={7} seed={10} compact />
+          <MiniFig label="FIG. 1" h={30} />
+          <TextLines count={4} seed={20} compact />
+        </div>
+        <div style={{ background:T.rule }} />
+        <div>
+          <div style={{ fontSize:7.5, fontWeight:700, letterSpacing:'0.06em', marginBottom:3 }}>II. BACKGROUND</div>
+          <TextLines count={6} seed={30} compact />
+          <MiniFig label="FIG. 2" h={30} />
+          <TextLines count={3} seed={38} compact />
+        </div>
+      </div>
+
+      {/* IEEE footer */}
+      <div style={{ height:1, background:T.rule, marginTop:7 }} />
+      <div style={{ display:'flex', justifyContent:'space-between', marginTop:3 }}>
+        <Folio style={{ fontSize:6 }}>0000-0000/26$00.00 © 2026 IEEE</Folio>
+        <Folio style={{ fontSize:6 }}>Authorized licensed use limited to the subscriber</Folio>
       </div>
     </div>
+  );
+
+  // ACM sigconf variant
+  return (
+    <div style={{
+      background: T.paper, border: `1px solid ${T.ink}`,
+      padding: '10px 11px 8px', minHeight: 420,
+      boxShadow: `6px 6px 0 -1px ${T.creamDeep}`,
+      fontFamily: "'Spectral', serif", fontSize: 8, lineHeight: 1.3,
+    }}>
+      {/* ACM running head */}
+      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
+        <Folio style={{ fontSize:6.5 }}>EuroSys '26, April 27–30, 2026, Rotterdam, Netherlands</Folio>
+        <Folio style={{ fontSize:6.5 }}>1</Folio>
+      </div>
+      <div style={{ height:1, background:T.ink, marginBottom:7 }} />
+
+      {/* ACM title — larger, accent colour */}
+      <div style={{
+        fontFamily:"'Source Serif 4',serif", fontSize:12, fontWeight:600,
+        lineHeight:1.25, color:accent, marginBottom:6,
+      }}>
+        Adaptive Thermal Regulation in Distributed Edge Compute Clusters
+      </div>
+
+      {/* ACM per-author grid */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'0 6px', marginBottom:6, paddingBottom:5, borderBottom:`1px solid ${T.rule}` }}>
+        {[['Alice Chen','a.chen@inst.edu'],['Marcus Okonkwo','m.ok@inst.edu'],['Rajan Iyer','r.iyer@su.edu']].map(([name,email]) => (
+          <div key={name} style={{ fontSize:6.5 }}>
+            <div style={{ fontWeight:700, marginBottom:1 }}>{name}</div>
+            <div style={{ color:T.muted, fontStyle:'italic' }}>Dept. of CS</div>
+            <div style={{ color:T.muted, fontStyle:'italic' }}>Institute of Technology</div>
+            <div style={{ color:accent }}>{email}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ACM ABSTRACT — all-caps section label */}
+      <div style={{ marginBottom:4 }}>
+        <div style={{ fontSize:7.5, fontWeight:700, letterSpacing:'0.09em', textTransform:'uppercase', marginBottom:2 }}>Abstract</div>
+        <TextLines count={4} seed={0} compact />
+      </div>
+
+      {/* CCS Concepts */}
+      <div style={{ fontSize:6.5, color:T.muted, marginBottom:2 }}>
+        <span style={{ fontWeight:700 }}>CCS CONCEPTS</span>
+        {' • Computing methodologies → Distributed computing; Hardware → Thermal management'}
+      </div>
+
+      {/* Keywords */}
+      <div style={{ fontSize:6.5, color:T.muted, marginBottom:4 }}>
+        <span style={{ fontWeight:700 }}>KEYWORDS</span>
+        {' thermal regulation, edge clusters, distributed scheduling, resource management'}
+      </div>
+
+      {/* ACM Reference Format line */}
+      <div style={{ fontSize:6, color:T.muted, fontStyle:'italic', marginBottom:6, paddingBottom:5, borderBottom:`1px solid ${T.ink}` }}>
+        ACM Reference Format: A. Chen, M. Okonkwo, R. Iyer. 2026. Adaptive Thermal Regulation in Distributed Edge Compute Clusters. In <em>EuroSys '26</em>.
+      </div>
+
+      {/* Two-column body — ACM has no column rule */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+        <div>
+          <div style={{ fontSize:7.5, fontWeight:700, marginBottom:3 }}>1 INTRODUCTION</div>
+          <TextLines count={6} seed={10} compact />
+          <MiniFig label="Fig. 1" h={28} />
+        </div>
+        <div>
+          <div style={{ fontSize:7.5, fontWeight:700, marginBottom:3 }}>2 BACKGROUND</div>
+          <TextLines count={6} seed={25} compact />
+          <MiniFig label="Fig. 2" h={28} />
+        </div>
+      </div>
+
+      {/* ACM footer */}
+      <div style={{ height:1, background:T.rule, marginTop:7 }} />
+      <div style={{ marginTop:3 }}>
+        <Folio style={{ fontSize:6 }}>© 2026 Copyright held by the owner/author(s). ACM 978-x-xxxx-xxxx-x/26/04. https://doi.org/10.1145/XXXXXXX.XXXXXXX</Folio>
+      </div>
+    </div>
+  );
+};
+
+// ─── Twin Pages (auto-animating) ──────────────────────────────────────────────
+const TwinPages = ({ accent }) => {
+  const [dir, setDir] = React.useState('ieee-acm');
+  const [tick, setTick] = React.useState(0);
+
+  React.useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 4000);
+    return () => clearInterval(id);
+  }, []);
+  React.useEffect(() => {
+    setDir(d => d === 'ieee-acm' ? 'acm-ieee' : 'ieee-acm');
+  }, [tick]);
+
+  const ieeeLeft = dir === 'ieee-acm';
+
+  return (
+    <div style={{ position: 'relative', paddingTop: 30 }}>
+      {/* Toggle pill */}
+      <div style={{
+        position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)',
+        display: 'flex', background: T.paper, border: `1px solid ${T.ink}`, zIndex: 2,
+      }}>
+        {[['ieee-acm','IEEE → ACM'],['acm-ieee','ACM → IEEE']].map(([k,label]) => (
+          <button key={k} onClick={() => setDir(k)} style={{
+            border: 'none', background: dir === k ? T.ink : 'transparent',
+            color: dir === k ? T.paper : T.ink,
+            padding: '7px 16px', cursor: 'pointer',
+            fontFamily: "'IBM Plex Mono', monospace", fontSize: 10,
+            letterSpacing: '0.12em', textTransform: 'uppercase',
+          }}>{label}</button>
+        ))}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 46px 1fr', alignItems: 'center' }}>
+        <PagePreview variant={ieeeLeft ? 'ieee' : 'acm'} accent={accent} />
+
+        {/* Center arrow */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+          <Folio style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', fontSize: 9 }}>Recompose</Folio>
+          <div style={{
+            width: 30, height: 30, borderRadius: '50%', background: accent, color: T.paper,
+            display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 700,
+            transition: 'transform 600ms ease',
+            transform: ieeeLeft ? 'rotate(0deg)' : 'rotate(180deg)',
+          }}>→</div>
+          <Folio style={{ writingMode: 'vertical-rl', fontSize: 9 }}>
+            {ieeeLeft ? 'IEEE → ACM' : 'ACM → IEEE'}
+          </Folio>
+        </div>
+
+        <PagePreview variant={ieeeLeft ? 'acm' : 'ieee'} accent={accent} />
+      </div>
+    </div>
+  );
+};
+
+// ─── Hero ─────────────────────────────────────────────────────────────────────
+const Hero = ({ accent }) => (
+  <section style={{ padding: '32px 64px 64px', background: T.paper }}>
+    <Rule thick />
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: 56, paddingTop: 36 }}>
+      <div>
+        <Folio style={{ marginBottom: 16 }}>The Parser · Vol. 01</Folio>
+        <h1 style={{
+          fontFamily: "'Source Serif 4', serif", fontSize: 68,
+          lineHeight: 0.96, margin: 0, color: T.ink,
+          letterSpacing: '-0.028em', fontWeight: 450,
+        }}>
+          Reformat your<br />
+          paper without<br />
+          <span style={{ fontStyle: 'italic', color: accent }}>re-typesetting</span><br />
+          a single line.
+        </h1>
+        <p style={{
+          fontFamily: "'Spectral', serif", fontSize: 17, lineHeight: 1.6,
+          color: T.inkSoft, marginTop: 26, maxWidth: 430,
+        }}>
+          Paper Parser moves manuscripts between <b>IEEE</b> and <b>ACM</b> templates
+          while preserving citations, cross-references, figures, and equations —
+          from a single PDF.
+        </p>
+        <div style={{ display: 'flex', gap: 12, marginTop: 30 }}>
+          <a href="#convert" style={{
+            padding: '14px 24px', background: T.ink, color: T.paper, border: 'none',
+            fontFamily: "'IBM Plex Mono', monospace", fontSize: 11,
+            letterSpacing: '0.14em', textTransform: 'uppercase',
+            textDecoration: 'none', display: 'inline-block', cursor: 'pointer',
+          }}>Upload a PDF</a>
+          <a href="#compare" style={{
+            padding: '14px 24px', background: 'transparent', color: T.ink,
+            border: `1px solid ${T.ink}`,
+            fontFamily: "'IBM Plex Mono', monospace", fontSize: 11,
+            letterSpacing: '0.14em', textTransform: 'uppercase',
+            textDecoration: 'none', display: 'inline-block', cursor: 'pointer',
+          }}>See a demo</a>
+        </div>
+        <div style={{ display: 'flex', gap: 32, marginTop: 36 }}>
+          {[['3','AI Agents'], ['<90s','Median round-trip'], ['0','Files retained']].map(([n,l]) => (
+            <div key={l}>
+              <div style={{
+                fontFamily: "'Source Serif 4', serif", fontSize: 26,
+                fontWeight: 500, color: T.ink, letterSpacing: '-0.01em',
+              }}>{n}</div>
+              <Folio style={{ marginTop: 4 }}>{l}</Folio>
+            </div>
+          ))}
+        </div>
+      </div>
+      <TwinPages accent={accent} />
+    </div>
+  </section>
+);
+
+// ─── How It Works ─────────────────────────────────────────────────────────────
+const HowItWorks = ({ accent }) => (
+  <section id="how-it-works" style={{ padding: '60px 64px', background: T.creamDeep }}>
+    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 36 }}>
+      <div>
+        <Folio>§ I · Method</Folio>
+        <h2 style={{
+          fontFamily: "'Source Serif 4', serif", fontSize: 44,
+          margin: '8px 0 0', fontWeight: 450, letterSpacing: '-0.02em',
+        }}>How it works</h2>
+      </div>
+      <div style={{
+        fontFamily: "'Spectral', serif", fontStyle: 'italic',
+        color: T.muted, fontSize: 15, maxWidth: 280, textAlign: 'right',
+      }}>Three phases — parse, recompose, bind.</div>
+    </div>
+    <Rule />
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr' }}>
+      {[
+        { num:'01', title:'Parse', glyph:'¶',
+          body:'We decompose the PDF into a structured document tree — title, authors, sections, equations, figures, tables, and references — with a dedicated model per publisher template.' },
+        { num:'02', title:'Recompose', glyph:'⇌',
+          body:"Content is remapped into the target template: IEEE's two-column numeric style or ACM's reference format with author-year citations. Equations and figures are placed by a typesetter, not pasted." },
+        { num:'03', title:'Bind', glyph:'§',
+          body:'The Comp agent handles harmonization, validation, and compile orchestration with retry logic — then packages the camera-ready PDF and matching .tex source.' },
+      ].map((s, i) => (
+        <div key={s.num} style={{
+          padding: '32px 26px 28px',
+          borderRight: i < 2 ? `1px solid ${T.rule}` : 'none',
+          display: 'flex', flexDirection: 'column', gap: 12,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+            <Folio>Step {s.num}</Folio>
+            <div style={{
+              fontFamily: "'Source Serif 4', serif", fontSize: 38,
+              color: accent, fontStyle: 'italic', lineHeight: 1,
+            }}>{s.glyph}</div>
+          </div>
+          <div style={{
+            fontFamily: "'Source Serif 4', serif", fontSize: 26,
+            fontWeight: 500, letterSpacing: '-0.01em',
+          }}>{s.title}</div>
+          <div style={{
+            fontFamily: "'Spectral', serif", fontSize: 15,
+            lineHeight: 1.55, color: T.inkSoft,
+          }}>{s.body}</div>
+        </div>
+      ))}
+    </div>
+    <Rule />
+  </section>
+);
+
+// ─── Converter Widget ─────────────────────────────────────────────────────────
+const TemplatePill = ({ label, dark, accent }) => (
+  <div style={{
+    padding: '8px 16px',
+    fontFamily: "'Source Serif 4', serif", fontSize: 15, fontWeight: 500,
+    border: `1px solid ${T.ink}`,
+    background: dark ? T.ink : (accent || 'transparent'),
+    color: dark || accent ? T.paper : T.ink,
+  }}>{label}</div>
+);
+
+// Turn an uploaded filename into a presentable display title.
+// "Edge_Oriented_Redistribution_of_Computational_Load_for_Authentication_Systems.pdf"
+//   → "Edge Oriented Redistribution of Computational Load for Authentication Systems"
+// Drops the extension, normalises separators, strips any leading "arxiv-" /
+// version suffixes, and lower-cases the small connector words for a more
+// natural-looking heading.
+const titleFromFilename = (raw) => {
+  if (!raw) return '';
+  let name = String(raw).trim();
+  name = name.replace(/\.(pdf|tex|zip|tar|gz|tgz)$/i, '');
+  name = name.replace(/^(?:arxiv[-_]?|preprint[-_]?)/i, '');
+  name = name.replace(/[-_]+/g, ' ');
+  name = name.replace(/\s+v?\d+(\.\d+)*$/i, '');     // "...paper v2" → "...paper"
+  name = name.replace(/\s+/g, ' ').trim();
+  if (!name) return '';
+  const small = new Set(['of','for','and','the','in','on','to','a','an','via','with','from']);
+  return name.split(' ').map((w, i) => {
+    const lower = w.toLowerCase();
+    if (i > 0 && small.has(lower)) return lower;
+    if (w.length <= 3 && /^[A-Z]+$/.test(w)) return w; // keep acronyms uppercase
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  }).join(' ');
+};
+
+const ProofPanel = ({ stage, to, accent, progress, jobId, filename }) => (
+  <div style={{
+    background: T.paper, border: `1px solid ${T.ink}`,
+    position: 'relative', overflow: 'hidden', minHeight: 380,
+    display: 'flex', flexDirection: 'column',
+  }}>
+    {/* Title bar */}
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      padding: '9px 14px', borderBottom: `1px solid ${T.ink}`,
+      background: T.creamDeep, flexShrink: 0,
+    }}>
+      <Folio>Proof · {to} template</Folio>
+      <div style={{ display: 'flex', gap: 5 }}>
+        {[0,1,2].map(i => (
+          <div key={i} style={{
+            width: 8, height: 8, borderRadius: '50%',
+            border: `1px solid ${T.ink}`, background: i === 0 ? accent : 'transparent',
+          }} />
+        ))}
+      </div>
+    </div>
+
+    <div style={{ flex: 1, padding: 20, position: 'relative' }}>
+      {stage === 'idle' && (
+        <div style={{
+          position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
+          fontFamily: "'Spectral', serif", fontStyle: 'italic', color: T.muted, fontSize: 15,
+          textAlign: 'center', padding: 20,
+        }}>Proof will appear here once a manuscript is uploaded.</div>
+      )}
+      {stage === 'error' && (
+        <div style={{
+          position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
+          fontFamily: "'Spectral', serif", color: T.rust, fontSize: 14,
+          textAlign: 'center', padding: 20,
+        }}>Conversion failed. Please try again or contact pne007@latech.edu.</div>
+      )}
+      {(stage !== 'idle' && stage !== 'error') && (
+        <div style={{ position: 'relative', height: '100%' }}>
+          {stage !== 'done' && (
+            <div style={{
+              position: 'absolute', left: 0, right: 0, top: `${progress}%`,
+              height: 2, background: accent, boxShadow: `0 0 12px ${accent}`, zIndex: 2,
+              transition: 'top 150ms linear',
+            }} />
+          )}
+          <div style={{ opacity: stage === 'done' ? 1 : 0.6, transition: 'opacity 400ms' }}>
+            <div style={{
+              fontFamily: "'Source Serif 4', serif", fontSize: 16, fontWeight: 600,
+              textAlign: to === 'IEEE' ? 'center' : 'left', lineHeight: 1.2,
+              minHeight: 20,
+            }}>{titleFromFilename(filename) || (
+              <span style={{ display: 'inline-block', height: 14, width: '70%',
+                background: T.rule, opacity: 0.6 }} />
+            )}</div>
+            <div style={{ fontSize: 10, color: T.muted, marginTop: 5, fontStyle: 'italic',
+              textAlign: to === 'IEEE' ? 'center' : 'left', minHeight: 12 }}>
+              {/* Authors are unknown until the parser reports back; show a
+                  shimmer line instead of a fabricated byline so the preview
+                  always reflects what we actually know. */}
+              <span style={{ display: 'inline-block', height: 8, width: '40%',
+                background: T.rule, opacity: 0.5 }} />
+            </div>
+            <div style={{
+              display: 'grid', gridTemplateColumns: to === 'IEEE' ? '1fr 1fr' : '1fr',
+              gap: to === 'IEEE' ? 10 : 0, marginTop: 12,
+            }}>
+              {Array.from({ length: to === 'IEEE' ? 2 : 1 }).map((_, ci) => (
+                <div key={ci} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{
+                    fontFamily: "'IBM Plex Mono', monospace", fontSize: 8,
+                    letterSpacing: '0.16em', textTransform: 'uppercase', color: accent,
+                  }}>{ci === 0 ? 'Abstract' : 'I. Intro'}</div>
+                  {Array.from({ length: 12 }).map((_, i) => (
+                    <div key={i} style={{ height: 4, background: T.rule, width: `${62 + ((i*9+ci*3)%34)}%` }} />
+                  ))}
+                  <div style={{
+                    marginTop: 7, height: 46,
+                    background: `repeating-linear-gradient(135deg,${T.creamDeep} 0 5px,${T.paper} 5px 10px)`,
+                    border: `1px solid ${T.rule}`, display: 'grid', placeItems: 'center',
+                  }}>
+                    <Folio style={{ fontSize: 8 }}>FIG. {ci+1}</Folio>
+                  </div>
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <div key={i} style={{ height: 4, background: T.rule, width: `${55+((i*13+ci*5)%40)}%` }} />
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+          {stage === 'done' && jobId && (
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.rule}` }}>
+              <a href={`/job.html?job=${encodeURIComponent(jobId)}`} style={{
+                display: 'inline-block', padding: '11px 18px',
+                background: T.ink, color: T.paper,
+                fontFamily: "'IBM Plex Mono', monospace", fontSize: 10,
+                letterSpacing: '0.12em', textTransform: 'uppercase', textDecoration: 'none',
+              }}>View job &amp; download →</a>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   </div>
+);
+
+const ConverterWidget = ({ accent }) => {
+  const [stage, setStage]   = React.useState('idle');
+  const [progress, setProgress] = React.useState(0);
+  const [from, setFrom]     = React.useState('IEEE');
+  const [to, setTo]         = React.useState('ACM');
+  const [filename, setFilename] = React.useState('');
+  const [dragOver, setDragOver] = React.useState(false);
+  const [jobId, setJobId]   = React.useState(null);
+  const [errMsg, setErrMsg] = React.useState('');
+  const [isPdf, setIsPdf]   = React.useState(false);
+  const fileRef  = React.useRef(null);
+  const folderRef = React.useRef(null);
+  const pollRef  = React.useRef(null);
+  const progRef  = React.useRef(null);
+
+  const swap = () => { setFrom(f => f === 'IEEE' ? 'ACM' : 'IEEE'); setTo(t => t === 'ACM' ? 'IEEE' : 'ACM'); };
+
+  const reset = () => {
+    setStage('idle'); setProgress(0); setFilename(''); setJobId(null); setErrMsg(''); setIsPdf(false);
+    clearInterval(pollRef.current); clearInterval(progRef.current);
+  };
+
+  const startProgress = () => {
+    clearInterval(progRef.current);
+    progRef.current = setInterval(() => {
+      setProgress(p => p >= 90 ? 90 : p + (0.8 + Math.random() * 1.5));
+    }, 200);
+  };
+
+  const stopProgress = (final = 100) => {
+    clearInterval(progRef.current);
+    setProgress(final);
+  };
+
+  const startPolling = (id) => {
+    clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const res  = await fetch('/api/jobs');
+        const jobs = await res.json();
+        const job  = Array.isArray(jobs) ? jobs.find(j => j.job_id === id) : null;
+        if (!job) return;
+
+        // Terminal: failed
+        if (job.status === 'failed' || job.status === 'error') {
+          stopProgress(0);
+          setStage('error');
+          setErrMsg(job.error?.message || 'Conversion failed');
+          clearInterval(pollRef.current);
+          return;
+        }
+
+        // Terminal: success (backend uses 'success', not 'done')
+        if (job.status === 'success') {
+          stopProgress(100);
+          setStage('done');
+          clearInterval(pollRef.current);
+          return;
+        }
+
+        // In-progress: map backend stage names to UI stages
+        const map = {
+          upload: 'uploading', queued: 'uploading',
+          parse: 'parsing', cpr: 'parsing', pdf_ingest: 'parsing',
+          recompose: 'recomposing', harmonize: 'recomposing',
+          compile: 'recomposing', validate: 'recomposing',
+          repair_1: 'repairing', repair_2: 'repairing', package: 'recomposing',
+        };
+        const mapped = map[(job.stage || '').toLowerCase()] || 'parsing';
+        setStage(mapped);
+      } catch { /* network blip — keep polling */ }
+    }, 1500);
+  };
+
+  React.useEffect(() => () => { clearInterval(pollRef.current); clearInterval(progRef.current); }, []);
+
+  const uploadManuscript = async (file, displayName) => {
+    if (!file) return;
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['pdf','tex','zip'].includes(ext)) { alert('Please upload a PDF, .tex, or ZIP file.'); return; }
+
+    setIsPdf(ext === 'pdf');
+    setFilename(displayName || file.name);
+    setStage('uploading');
+    setProgress(0);
+    setJobId(null);
+    setErrMsg('');
+    startProgress();
+
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('source_format', from.toLowerCase());
+    fd.append('target_format', to.toLowerCase());
+
+    try {
+      const res  = await fetch('/api/jobs', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
+      setJobId(data.job_id);
+      setStage('parsing');
+      startPolling(data.job_id);
+    } catch (err) {
+      stopProgress(0);
+      setStage('error');
+      setErrMsg(err.message);
+    }
+  };
+
+  const handleFile = async (file) => uploadManuscript(file, file?.name);
+
+  const zipFolderFiles = async (files) => {
+    const selected = Array.from(files || []);
+    if (!selected.length) return null;
+    if (!window.JSZip) {
+      throw new Error('Folder upload support did not load. Please zip the folder manually and upload the .zip file.');
+    }
+    const zip = new JSZip();
+    let root = 'latex-project';
+    for (const file of selected) {
+      const rel = file.webkitRelativePath || file.name;
+      const first = rel.split('/')[0];
+      if (first) { root = first; break; }
+    }
+    for (const file of selected) {
+      const rel = file.webkitRelativePath || `${root}/${file.name}`;
+      if (!rel || file.name === '.DS_Store') continue;
+      zip.file(rel, file);
+    }
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    return new File([blob], `${root}.zip`, { type: 'application/zip' });
+  };
+
+  const handleFolder = async (files) => {
+    try {
+      const zipFile = await zipFolderFiles(files);
+      if (zipFile) await uploadManuscript(zipFile, `${zipFile.name} (folder upload)`);
+    } catch (err) {
+      setStage('error');
+      setErrMsg(err.message);
+    } finally {
+      if (folderRef.current) folderRef.current.value = '';
+    }
+  };
+
+  const stageLabel = {
+    idle:        'Awaiting manuscript',
+    uploading:   'Uploading…',
+    parsing:     'Parsing document tree (CPR)…',
+    recomposing: `Recomposing into ${to} template… (LLM — may take 3–5 min)`,
+    repairing:   'Repairing LaTeX (LLM self-correction)…',
+    done:        'Conversion complete',
+    error:       errMsg || 'Error',
+  }[stage] || 'Processing…';
+
+  return (
+    <section id="convert" style={{ padding: '60px 64px', background: T.cream }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 18 }}>
+        <div>
+          <Folio>§ II · Live proof</Folio>
+          <h2 style={{
+            fontFamily: "'Source Serif 4', serif", fontSize: 44,
+            margin: '8px 0 0', fontWeight: 450, letterSpacing: '-0.02em',
+          }}>Try it on your manuscript.</h2>
+        </div>
+        <div style={{
+          fontFamily: "'Spectral', serif", fontStyle: 'italic',
+          color: T.muted, fontSize: 14, maxWidth: 280, textAlign: 'right',
+        }}>Upload <code style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 }}>.tex</code> or <code style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 }}>.zip</code> for best results. PDF accepted with reduced fidelity.</div>
+      </div>
+      <Rule thick />
+
+      <div style={{ marginTop: 26, display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 24 }}>
+        {/* Left panel */}
+        <div style={{
+          background: T.paper, border: `1px solid ${T.ink}`,
+          padding: 26, display: 'flex', flexDirection: 'column', gap: 18,
+        }}>
+          {/* Direction row */}
+          <div>
+            <Folio style={{ marginBottom: 8 }}>Direction</Folio>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <TemplatePill label={from} dark />
+              <button onClick={swap} disabled={stage !== 'idle'} style={{
+                width: 34, height: 34, borderRadius: '50%',
+                border: `1px solid ${T.ink}`, background: T.paper, color: T.ink,
+                fontSize: 14, display: 'grid', placeItems: 'center',
+                cursor: stage === 'idle' ? 'pointer' : 'not-allowed',
+                opacity: stage === 'idle' ? 1 : 0.35,
+              }}>⇌</button>
+              <TemplatePill label={to} accent={accent} />
+              <div style={{ flex: 1 }} />
+              <Folio>10 MB · PDF / 50 MB · ZIP</Folio>
+            </div>
+          </div>
+
+          {/* Drop zone */}
+          <input ref={fileRef} type="file" accept=".pdf,.tex,.zip" style={{ display:'none' }}
+            onChange={e => { if (e.target.files[0]) handleFile(e.target.files[0]); }} />
+          <input ref={folderRef} type="file" webkitdirectory="true" directory="true" multiple style={{ display:'none' }}
+            onChange={e => { if (e.target.files.length) handleFolder(e.target.files); }} />
+
+          <div
+            onDragOver={e => { e.preventDefault(); if (stage === 'idle') setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={e => { e.preventDefault(); setDragOver(false); if (stage === 'idle' && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); }}
+            style={{
+              flex: 1, minHeight: 220,
+              border: `2px dashed ${dragOver ? accent : T.rule}`,
+              background: dragOver ? T.creamDeep : 'transparent',
+              padding: 22, display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', gap: 12,
+              cursor: stage === 'idle' ? 'pointer' : 'default',
+              transition: 'all 180ms ease',
+            }}>
+            {stage === 'idle' && (<>
+              <div style={{
+                fontFamily: "'Source Serif 4', serif", fontSize: 50,
+                color: accent, lineHeight: 1, fontStyle: 'italic',
+              }}>¶</div>
+              <div style={{
+                fontFamily: "'Source Serif 4', serif", fontSize: 20,
+                fontWeight: 500, color: T.ink, textAlign: 'center',
+              }}>Drop a manuscript, or choose a file or folder</div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button type="button" onClick={() => fileRef.current?.click()} style={{
+                  padding: '10px 14px', background: T.ink, color: T.paper,
+                  border: `1px solid ${T.ink}`, cursor: 'pointer',
+                  fontFamily: "'IBM Plex Mono', monospace", fontSize: 10,
+                  letterSpacing: '0.12em', textTransform: 'uppercase',
+                }}>Select file</button>
+                <button type="button" onClick={() => folderRef.current?.click()} style={{
+                  padding: '10px 14px', background: 'transparent', color: T.ink,
+                  border: `1px solid ${T.ink}`, cursor: 'pointer',
+                  fontFamily: "'IBM Plex Mono', monospace", fontSize: 10,
+                  letterSpacing: '0.12em', textTransform: 'uppercase',
+                }}>Select folder</button>
+              </div>
+              <Folio>.tex · .zip · .pdf · folders auto-zipped · 10 MB PDF / 50 MB ZIP</Folio>
+            </>)}
+
+            {stage !== 'idle' && (
+              <div style={{ width: '100%' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 7, flexWrap: 'wrap', gap: 4 }}>
+                  <div style={{ fontFamily: "'Source Serif 4', serif", fontSize: 15, fontWeight: 500, wordBreak: 'break-all' }}>
+                    {filename}
+                  </div>
+                  <Folio style={{ color: stage === 'error' ? T.rust : T.muted }}>
+                    {stageLabel}
+                  </Folio>
+                </div>
+
+                {isPdf && stage !== 'done' && stage !== 'error' && (
+                  <div style={{
+                    marginTop: 10, padding: '9px 12px',
+                    background: '#FDF3DC', border: '1px solid #E8C84A',
+                    display: 'flex', gap: 8, alignItems: 'flex-start',
+                  }}>
+                    <span style={{ fontSize: 13, lineHeight: 1 }}>⚠</span>
+                    <div style={{ fontFamily: "'Spectral', serif", fontSize: 12, lineHeight: 1.45, color: '#5C4A00' }}>
+                      <strong>PDF mode:</strong> text is extracted from the rendered file — math formatting and custom macros may degrade.
+                      For best results, upload the original <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>.tex</code> source or a <code style={{ fontFamily: "'IBM Plex Mono', monospace" }}>.zip</code> of your LaTeX project.
+                    </div>
+                  </div>
+                )}
+
+                {stage !== 'error' && (
+                  <div style={{ height: 5, background: T.rule, overflow: 'hidden', marginTop: isPdf ? 8 : 0 }}>
+                    <div style={{
+                      height: '100%', width: `${stage === 'done' ? 100 : progress}%`,
+                      background: accent, transition: 'width 180ms linear',
+                    }} />
+                  </div>
+                )}
+
+                {stage !== 'error' && (
+                  <div style={{ display: 'flex', marginTop: 16 }}>
+                    {['uploading','parsing','recomposing','done'].map((s, i) => {
+                      const order  = ['uploading','parsing','recomposing','done'];
+                      const active = order.indexOf(stage) >= i;
+                      return (
+                        <div key={s} style={{
+                          flex: 1, paddingTop: 8,
+                          borderTop: `2px solid ${active ? accent : T.rule}`,
+                        }}>
+                          <Folio style={{ color: active ? T.ink : T.muted, fontSize: 9 }}>
+                            {String(i+1).padStart(2,'0')} · {s === 'done' ? 'Ready' : s}
+                          </Folio>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {stage === 'done' && jobId && (
+                  <div style={{ marginTop: 16 }}>
+                    {/* ZIP — primary recommended download */}
+                    <a href={`/job.html?job=${encodeURIComponent(jobId)}`}
+                      style={{
+                        display: 'block', padding: '13px 16px',
+                        background: accent, color: T.paper,
+                        fontFamily: "'IBM Plex Mono', monospace", fontSize: 10,
+                        letterSpacing: '0.12em', textTransform: 'uppercase',
+                        textDecoration: 'none', textAlign: 'center', marginBottom: 4,
+                      }}>↓ Download ZIP bundle · View full job →</a>
+                    <div style={{
+                      fontFamily: "'Spectral', serif", fontStyle: 'italic',
+                      fontSize: 11, color: T.muted, textAlign: 'center', marginBottom: 10,
+                    }}>
+                      Recommended — full LaTeX project with all assets. Best structural consistency for re-submission.
+                    </div>
+
+                    {/* PDF + .tex secondary row */}
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <a href={`/api/jobs/${encodeURIComponent(jobId)}/artifact/main.pdf`}
+                          download="converted.pdf"
+                          style={{
+                            display: 'block', padding: '10px', background: T.ink, color: T.paper,
+                            fontFamily: "'IBM Plex Mono', monospace", fontSize: 10,
+                            letterSpacing: '0.12em', textTransform: 'uppercase',
+                            textDecoration: 'none', textAlign: 'center',
+                          }}>↓ PDF</a>
+                        <div style={{
+                          fontFamily: "'Spectral', serif", fontStyle: 'italic',
+                          fontSize: 10, color: T.muted, textAlign: 'center', marginTop: 3,
+                          lineHeight: 1.3,
+                        }}>Quick preview · consistency not guaranteed</div>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <a href={`/api/jobs/${encodeURIComponent(jobId)}/artifact/main.tex`}
+                          download="main.tex"
+                          style={{
+                            display: 'block', padding: '10px', background: 'transparent', color: T.ink,
+                            border: `1px solid ${T.ink}`,
+                            fontFamily: "'IBM Plex Mono', monospace", fontSize: 10,
+                            letterSpacing: '0.12em', textTransform: 'uppercase',
+                            textDecoration: 'none', textAlign: 'center',
+                          }}>↓ .tex source</a>
+                        <div style={{
+                          fontFamily: "'Spectral', serif", fontStyle: 'italic',
+                          fontSize: 10, color: T.muted, textAlign: 'center', marginTop: 3,
+                          lineHeight: 1.3,
+                        }}>Main file only · no assets</div>
+                      </div>
+                      <button onClick={reset} style={{
+                        padding: '10px 14px', background: 'transparent',
+                        color: T.muted, border: `1px solid ${T.rule}`,
+                        cursor: 'pointer', fontFamily: "'IBM Plex Mono', monospace", fontSize: 13,
+                        alignSelf: 'flex-start',
+                      }}>↻</button>
+                    </div>
+                  </div>
+                )}
+
+                {stage === 'error' && (
+                  <button onClick={reset} style={{
+                    marginTop: 14, padding: '11px 20px', background: T.ink, color: T.paper,
+                    border: 'none', cursor: 'pointer',
+                    fontFamily: "'IBM Plex Mono', monospace", fontSize: 10,
+                    letterSpacing: '0.12em', textTransform: 'uppercase',
+                  }}>Try again</button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Proof panel */}
+        <ProofPanel stage={stage} to={to} accent={accent} progress={progress} jobId={jobId} filename={filename} />
+      </div>
+    </section>
+  );
+};
+
+// ─── Features ─────────────────────────────────────────────────────────────────
+const Features = ({ accent }) => {
+  const items = [
+    { g:'[ ]', t:'Citations, preserved',      b:'Numeric [12] ↔ (Chen 2024). Bibliography is fully re-keyed without a missed reference.' },
+    { g:'▦',   t:'Figures & tables',          b:"Re-flowed into the target template's column grid. Captions and cross-refs renumbered." },
+    { g:'∑',   t:'Equations',                 b:'Inline and display math recompiled against the target class file, not rasterised.' },
+    { g:'◉',   t:'Preview before download',   b:'Pixel-accurate proof with diff toggle — see exactly what changed before you accept.' },
+    { g:'≡',   t:'CPR normalization',         b:'Affiliations, CCS concepts, funding, and conflict-of-interest fields enriched on every run.' },
+    { g:'⟳',   t:'Compile retries',           b:'Up to 3 automated LaTeX compile attempts with actionable log snippets per failure.' },
+    { g:'⊘',   t:'Privacy, by default',       b:'Papers are processed in sandboxed temp directories and deleted immediately after the job.' },
+    { g:'★',   t:'Structured reports',        b:'Conversion, harmonization, validation, and compile reports generated automatically per job.' },
+  ];
+  return (
+    <section id="features" style={{ padding: '72px 64px', background: T.paper }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 36 }}>
+        <div>
+          <Folio>§ III · Apparatus</Folio>
+          <h2 style={{
+            fontFamily: "'Source Serif 4', serif", fontSize: 44,
+            margin: '8px 0 0', fontWeight: 450, letterSpacing: '-0.02em',
+          }}>What travels between templates.</h2>
+        </div>
+        <div style={{
+          fontFamily: "'Spectral', serif", fontStyle: 'italic',
+          color: T.muted, fontSize: 14, maxWidth: 320, textAlign: 'right',
+        }}>Every structural element is reinterpreted — not copy-pasted.</div>
+      </div>
+      <Rule />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr' }}>
+        {items.map((f, i) => (
+          <div key={f.t} style={{
+            padding: '26px 20px',
+            borderRight: (i+1) % 4 !== 0 ? `1px solid ${T.rule}` : 'none',
+            borderBottom: i < 4 ? `1px solid ${T.rule}` : 'none',
+          }}>
+            <div style={{
+              fontFamily: "'Source Serif 4', serif", fontSize: 30,
+              color: accent, fontStyle: 'italic', lineHeight: 1, marginBottom: 10,
+            }}>{f.g}</div>
+            <div style={{
+              fontFamily: "'Source Serif 4', serif", fontSize: 16,
+              fontWeight: 500, marginBottom: 6,
+            }}>{f.t}</div>
+            <div style={{
+              fontFamily: "'Spectral', serif", fontSize: 14,
+              lineHeight: 1.55, color: T.inkSoft,
+            }}>{f.b}</div>
+          </div>
+        ))}
+      </div>
+      <Rule />
+    </section>
+  );
+};
+
+// ─── Before / After Slider ────────────────────────────────────────────────────
+const CompareLines = ({ count, seed = 0, citation = null }) => {
+  const WS = [100,91,86,97,79,88,100,93,81,96,74,89,100,84,92,77,95,88,100,82];
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+      {Array.from({ length: count }).map((_, i) => {
+        const w = WS[(i + seed) % WS.length];
+        const isPara = i > 0 && (i + seed) % 7 === 0;
+        const isCite = citation && (i + seed) % 5 === 3;
+        return isPara
+          ? <div key={i} style={{ height:4 }} />
+          : (
+            <div key={i} style={{ display:'flex', alignItems:'center', gap:3 }}>
+              <div style={{ height:4, background:T.rule, width:`${w}%`, flex:'none' }} />
+              {isCite && (
+                <div style={{
+                  fontSize:6.5, fontFamily:"'IBM Plex Mono',monospace",
+                  color:'#888', lineHeight:1, flex:'none',
+                }}>{citation}</div>
+              )}
+            </div>
+          );
+      })}
+    </div>
+  );
+};
+
+const ComparePage = ({ variant, accent }) => {
+  const isIeee = variant === 'ieee';
+
+  if (isIeee) return (
+    <div style={{
+      width:'100%', height:'100%', padding:'20px 30px 16px',
+      background:T.paper, fontFamily:"'Spectral',serif", fontSize:9, lineHeight:1.35,
+      overflowY:'hidden',
+    }}>
+      {/* IEEE running head */}
+      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}>
+        <Folio style={{ fontSize:8 }}>IEEE TRANS. ON DISTRIBUTED SYS. · VOL. XX · NO. Y · 2026</Folio>
+        <Folio style={{ fontSize:8 }}>1</Folio>
+      </div>
+      <div style={{ height:1, background:T.ink, marginBottom:10 }} />
+
+      {/* Centered title */}
+      <div style={{ textAlign:'center', marginBottom:5 }}>
+        <div style={{ fontFamily:"'Source Serif 4',serif", fontSize:14, fontWeight:600, lineHeight:1.2 }}>
+          Adaptive Thermal Regulation in Distributed Edge Compute Clusters
+        </div>
+      </div>
+
+      {/* Centered author block — IEEE superscript style */}
+      <div style={{ textAlign:'center', marginBottom:5 }}>
+        <div style={{ fontSize:9.5, fontStyle:'italic' }}>
+          Alice Chen<sup style={{fontSize:7}}>1</sup>, Marcus Okonkwo<sup style={{fontSize:7}}>1</sup>, Rajan Iyer<sup style={{fontSize:7}}>2</sup>
+        </div>
+        <div style={{ fontSize:8, color:T.muted, marginTop:2 }}>
+          <sup style={{fontSize:6}}>1</sup>Dept. of Computer Science, Institute of Technology · <sup style={{fontSize:6}}>2</sup>School of Engineering, State University
+        </div>
+        <div style={{ fontSize:8, color:T.muted }}>{'{a.chen, m.okonkwo}@inst.edu  ·  riyer@stateuniv.edu'}</div>
+      </div>
+
+      {/* Abstract — "Abstract—" inline IEEE style */}
+      <div style={{ marginBottom:5 }}>
+        <span style={{ fontSize:9, fontWeight:700, fontStyle:'italic' }}>Abstract</span>
+        <span style={{ fontSize:9 }}>&mdash; </span>
+        <CompareLines count={5} seed={0} />
+      </div>
+
+      {/* Index Terms */}
+      <div style={{ fontSize:8, marginBottom:8 }}>
+        <span style={{ fontWeight:700, fontStyle:'italic' }}>Index Terms</span>
+        <span style={{ color:T.muted }}>&mdash; thermal regulation, edge computing, distributed scheduling, resource management, load balancing</span>
+      </div>
+
+      <div style={{ height:1, background:T.ink, marginBottom:8 }} />
+
+      {/* Two columns with center rule */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1px 1fr', gap:'0 10px' }}>
+        <div>
+          <div style={{ fontSize:9, fontWeight:700, letterSpacing:'0.07em', marginBottom:4 }}>I. INTRODUCTION</div>
+          <CompareLines count={9} seed={10} citation="[1]" />
+          <div style={{
+            height:56, margin:'7px 0',
+            background:`repeating-linear-gradient(135deg,${T.creamDeep} 0 5px,${T.paper} 5px 10px)`,
+            border:`1px solid ${T.rule}`, display:'grid', placeItems:'center',
+          }}>
+            <Folio style={{ fontSize:8 }}>FIG. 1 · Thermal response curve</Folio>
+          </div>
+          <div style={{ fontSize:8, color:T.muted, textAlign:'center', marginBottom:5 }}>Fig. 1. Average thermal load vs. cluster utilization.</div>
+          <CompareLines count={5} seed={22} citation="[2]" />
+        </div>
+        <div style={{ background:T.rule }} />
+        <div>
+          <div style={{ fontSize:9, fontWeight:700, letterSpacing:'0.07em', marginBottom:4 }}>II. BACKGROUND &amp; RELATED WORK</div>
+          <CompareLines count={8} seed={30} citation="[3]" />
+          <div style={{
+            height:56, margin:'7px 0',
+            background:`repeating-linear-gradient(135deg,${T.creamDeep} 0 5px,${T.paper} 5px 10px)`,
+            border:`1px solid ${T.rule}`, display:'grid', placeItems:'center',
+          }}>
+            <Folio style={{ fontSize:8 }}>FIG. 2 · System architecture</Folio>
+          </div>
+          <div style={{ fontSize:8, color:T.muted, textAlign:'center', marginBottom:5 }}>Fig. 2. Distributed edge cluster topology.</div>
+          <CompareLines count={4} seed={40} />
+        </div>
+      </div>
+
+      {/* IEEE footer */}
+      <div style={{ height:1, background:T.rule, marginTop:10 }} />
+      <div style={{ display:'flex', justifyContent:'space-between', marginTop:3 }}>
+        <Folio style={{ fontSize:7 }}>0000-0000/26$00.00 © 2026 IEEE</Folio>
+        <Folio style={{ fontSize:7 }}>Authorized licensed use limited to subscribers</Folio>
+      </div>
+    </div>
+  );
+
+  // ACM sigconf
+  return (
+    <div style={{
+      width:'100%', height:'100%', padding:'20px 30px 16px',
+      background:T.paper, fontFamily:"'Spectral',serif", fontSize:9, lineHeight:1.35,
+      overflowY:'hidden',
+    }}>
+      {/* ACM running head */}
+      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}>
+        <Folio style={{ fontSize:8 }}>EuroSys '26, April 27–30, 2026, Rotterdam, Netherlands</Folio>
+        <Folio style={{ fontSize:8 }}>1</Folio>
+      </div>
+      <div style={{ height:1, background:T.ink, marginBottom:10 }} />
+
+      {/* ACM title — accent colour, left-aligned, larger */}
+      <div style={{
+        fontFamily:"'Source Serif 4',serif", fontSize:17, fontWeight:600,
+        lineHeight:1.2, color:accent, marginBottom:8,
+      }}>
+        Adaptive Thermal Regulation in Distributed Edge Compute Clusters
+      </div>
+
+      {/* ACM per-author grid */}
+      <div style={{
+        display:'grid', gridTemplateColumns:'1fr 1fr 1fr',
+        gap:'0 10px', marginBottom:8, paddingBottom:7,
+        borderBottom:`1px solid ${T.rule}`,
+      }}>
+        {[['Alice Chen','Dept. of CS','Institute of Technology','a.chen@inst.edu'],
+          ['Marcus Okonkwo','Dept. of CS','Institute of Technology','m.ok@inst.edu'],
+          ['Rajan Iyer','School of Engineering','State University','r.iyer@su.edu'],
+        ].map(([name,dept,uni,email]) => (
+          <div key={name} style={{ fontSize:8 }}>
+            <div style={{ fontWeight:700, marginBottom:1 }}>{name}</div>
+            <div style={{ color:T.muted, fontStyle:'italic' }}>{dept}</div>
+            <div style={{ color:T.muted, fontStyle:'italic' }}>{uni}</div>
+            <div style={{ color:accent }}>{email}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ABSTRACT — uppercase section label, ACM style */}
+      <div style={{ marginBottom:5 }}>
+        <div style={{ fontSize:9, fontWeight:700, letterSpacing:'0.1em', textTransform:'uppercase', marginBottom:3 }}>Abstract</div>
+        <CompareLines count={5} seed={0} />
+      </div>
+
+      {/* CCS Concepts */}
+      <div style={{ fontSize:7.5, color:T.muted, marginBottom:2 }}>
+        <span style={{ fontWeight:700 }}>CCS CONCEPTS</span>
+        {' • Computing methodologies → Distributed computing • Hardware → Thermal management • Networks → Edge computing'}
+      </div>
+
+      {/* Keywords */}
+      <div style={{ fontSize:7.5, color:T.muted, marginBottom:5 }}>
+        <span style={{ fontWeight:700 }}>KEYWORDS</span>
+        {' thermal regulation, edge clusters, distributed scheduling, resource management, load balancing'}
+      </div>
+
+      {/* ACM reference format line */}
+      <div style={{ fontSize:7.5, color:T.muted, fontStyle:'italic', marginBottom:7, paddingBottom:6, borderBottom:`1px solid ${T.ink}` }}>
+        ACM Reference Format: A. Chen, M. Okonkwo, R. Iyer. 2026. Adaptive Thermal Regulation in Distributed Edge Compute Clusters. In <em>EuroSys '26</em>. ACM, NY. https://doi.org/10.1145/xxxxxxx
+      </div>
+
+      {/* Two-column body — NO center rule (ACM) */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+        <div>
+          <div style={{ fontSize:9, fontWeight:700, marginBottom:4 }}>1 INTRODUCTION</div>
+          <CompareLines count={9} seed={10} citation="(Chen, 2023)" />
+          <div style={{
+            height:56, margin:'7px 0',
+            background:`repeating-linear-gradient(135deg,${T.creamDeep} 0 5px,${T.paper} 5px 10px)`,
+            border:`1px solid ${T.rule}`, display:'grid', placeItems:'center',
+          }}>
+            <Folio style={{ fontSize:8 }}>Figure 1: Thermal response curve</Folio>
+          </div>
+          <div style={{ fontSize:8, color:T.muted, textAlign:'center', marginBottom:5 }}>Figure 1. Average thermal load vs. cluster utilization.</div>
+          <CompareLines count={4} seed={22} citation="(Okonkwo et al., 2022)" />
+        </div>
+        <div>
+          <div style={{ fontSize:9, fontWeight:700, marginBottom:4 }}>2 BACKGROUND &amp; RELATED WORK</div>
+          <CompareLines count={8} seed={30} citation="(Iyer &amp; Liu, 2021)" />
+          <div style={{
+            height:56, margin:'7px 0',
+            background:`repeating-linear-gradient(135deg,${T.creamDeep} 0 5px,${T.paper} 5px 10px)`,
+            border:`1px solid ${T.rule}`, display:'grid', placeItems:'center',
+          }}>
+            <Folio style={{ fontSize:8 }}>Figure 2: System architecture</Folio>
+          </div>
+          <div style={{ fontSize:8, color:T.muted, textAlign:'center', marginBottom:5 }}>Figure 2. Distributed edge cluster topology.</div>
+          <CompareLines count={3} seed={40} />
+        </div>
+      </div>
+
+      {/* ACM footer */}
+      <div style={{ height:1, background:T.rule, marginTop:10 }} />
+      <div style={{ marginTop:3 }}>
+        <Folio style={{ fontSize:7 }}>© 2026 Copyright held by the owner/author(s). ACM 978-x-xxxx-xxxx-x/26/04. https://doi.org/10.1145/xxxxxxx</Folio>
+      </div>
+    </div>
+  );
+};
+
+const BeforeAfter = ({ accent }) => {
+  const [split, setSplit]     = React.useState(0.5);
+  const [dragging, setDragging] = React.useState(false);
+  const ref = React.useRef(null);
+
+  const update = (clientX) => {
+    if (!ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    setSplit(Math.max(0.06, Math.min(0.94, (clientX - r.left) / r.width)));
+  };
+
+  return (
+    <section id="compare" style={{ padding: '72px 64px', background: T.cream }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 22 }}>
+        <div>
+          <Folio>§ IV · Comparison</Folio>
+          <h2 style={{
+            fontFamily: "'Source Serif 4', serif", fontSize: 44,
+            margin: '8px 0 0', fontWeight: 450, letterSpacing: '-0.02em',
+          }}>Before &amp; after, side by side.</h2>
+        </div>
+        <Folio>Drag the rule →</Folio>
+      </div>
+
+      <div
+        ref={ref}
+        onMouseMove={e => dragging && update(e.clientX)}
+        onMouseUp={() => setDragging(false)}
+        onMouseLeave={() => setDragging(false)}
+        onTouchMove={e => { e.preventDefault(); dragging && update(e.touches[0].clientX); }}
+        onTouchEnd={() => setDragging(false)}
+        style={{
+          position: 'relative', height: 500, border: `1px solid ${T.ink}`,
+          overflow: 'hidden', cursor: dragging ? 'ew-resize' : 'col-resize',
+          userSelect: 'none', touchAction: 'none',
+        }}>
+        {/* AFTER (ACM) — behind */}
+        <div style={{ position: 'absolute', inset: 0 }}>
+          <ComparePage variant="acm" accent={accent} />
+        </div>
+        {/* BEFORE (IEEE) — clipped */}
+        <div style={{ position: 'absolute', inset: 0, clipPath: `inset(0 ${(1-split)*100}% 0 0)` }}>
+          <ComparePage variant="ieee" accent={accent} />
+        </div>
+        {/* Divider */}
+        <div style={{ position: 'absolute', top: 0, bottom: 0, left: `${split*100}%`, width: 1, background: T.ink, pointerEvents: 'none' }} />
+        {/* Handle */}
+        <div
+          onMouseDown={() => setDragging(true)}
+          onTouchStart={() => setDragging(true)}
+          style={{
+            position: 'absolute', top: '50%', left: `${split*100}%`,
+            transform: 'translate(-50%,-50%)',
+            width: 50, height: 50, borderRadius: '50%',
+            background: accent, color: T.paper,
+            border: `2px solid ${T.ink}`, cursor: 'ew-resize',
+            display: 'grid', placeItems: 'center',
+            fontSize: 16, fontWeight: 700, zIndex: 10,
+            boxShadow: '0 2px 10px rgba(0,0,0,0.25)',
+          }}>⇌</div>
+        {/* Labels */}
+        <div style={{
+          position: 'absolute', top: 12, left: 14,
+          background: T.ink, color: T.paper, padding: '5px 10px',
+          fontFamily: "'IBM Plex Mono', monospace", fontSize: 9, letterSpacing: '0.16em',
+          pointerEvents: 'none',
+        }}>IEEE · Before</div>
+        <div style={{
+          position: 'absolute', top: 12, right: 14,
+          background: accent, color: T.paper, padding: '5px 10px',
+          fontFamily: "'IBM Plex Mono', monospace", fontSize: 9, letterSpacing: '0.16em',
+          pointerEvents: 'none',
+        }}>ACM · After</div>
+      </div>
+    </section>
+  );
+};
+
+
+// ─── Pricing ──────────────────────────────────────────────────────────────────
+const Pricing = ({ accent }) => {
+  const tiers = [
+    { n:'Student', p:'Free', sub:'With .edu email',
+      feats:['Unlimited single-paper conversions','PDF + .tex download','Standard queue','Community support'],
+      cta:'Verify with .edu', featured: false },
+    { n:'Researcher', p:'$12', sub:'per month · billed yearly',
+      feats:['Everything in Student','Batch of 25 papers','Priority queue','Overleaf push','Diff & revision history'],
+      cta:'Start 14-day trial', featured: true },
+    { n:'Lab', p:'$49', sub:'per month · up to 10 seats',
+      feats:['Everything in Researcher','Batch of 100','Shared templates & preferences','SSO · SAML','Dedicated support'],
+      cta:'Talk to us', featured: false },
+  ];
+  return (
+    <section id="pricing" style={{ padding: '80px 64px', background: T.paper }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 28 }}>
+        <div>
+          <Folio>§ V · Subscription</Folio>
+          <h2 style={{
+            fontFamily: "'Source Serif 4', serif", fontSize: 44,
+            margin: '8px 0 0', fontWeight: 450, letterSpacing: '-0.02em',
+          }}>An honest subscription.</h2>
+        </div>
+        <div style={{
+          fontFamily: "'Spectral', serif", fontStyle: 'italic',
+          color: T.muted, fontSize: 14, maxWidth: 320, textAlign: 'right',
+        }}>Free for students — always. Paid tiers keep the lights on.</div>
+      </div>
+      <Rule thick />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr' }}>
+        {tiers.map((tier, i) => (
+          <div key={tier.n} style={{
+            padding: '34px 28px 28px',
+            borderRight: i < 2 ? `1px solid ${T.rule}` : 'none',
+            background: tier.featured ? T.cream : 'transparent',
+            position: 'relative',
+          }}>
+            {tier.featured && (
+              <div style={{ position: 'absolute', top: -1, left: 0, right: -1, height: 3, background: accent }} />
+            )}
+            <Folio style={{ color: tier.featured ? accent : T.muted }}>
+              {tier.featured ? 'Most subscribed' : '·'}
+            </Folio>
+            <div style={{
+              fontFamily: "'Source Serif 4', serif", fontSize: 22,
+              fontWeight: 500, marginTop: 6,
+            }}>{tier.n}</div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 16 }}>
+              <div style={{
+                fontFamily: "'Source Serif 4', serif", fontSize: 52,
+                fontWeight: 450, letterSpacing: '-0.025em', lineHeight: 1,
+              }}>{tier.p}</div>
+            </div>
+            <Folio style={{ marginTop: 5 }}>{tier.sub}</Folio>
+            <Rule style={{ margin: '20px 0 16px' }} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 9, marginBottom: 22 }}>
+              {tier.feats.map(f => (
+                <div key={f} style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}>
+                  <div style={{
+                    fontFamily: "'Source Serif 4', serif", fontStyle: 'italic',
+                    color: accent, fontSize: 14, lineHeight: 1.5, flexShrink: 0,
+                  }}>§</div>
+                  <div style={{ fontFamily: "'Spectral', serif", fontSize: 14, lineHeight: 1.5, color: T.inkSoft }}>{f}</div>
+                </div>
+              ))}
+            </div>
+            <button style={{
+              width: '100%', padding: '13px',
+              background: tier.featured ? T.ink : 'transparent',
+              color: tier.featured ? T.paper : T.ink,
+              border: `1px solid ${T.ink}`, cursor: 'pointer',
+              fontFamily: "'IBM Plex Mono', monospace", fontSize: 10,
+              letterSpacing: '0.14em', textTransform: 'uppercase',
+            }}>{tier.cta}</button>
+          </div>
+        ))}
+      </div>
+      <Rule thick />
+    </section>
+  );
+};
+
+// ─── FAQ ──────────────────────────────────────────────────────────────────────
+const FAQ = ({ accent }) => {
+  const [open, setOpen] = React.useState(0);
+  const items = [
+    { q:'Which templates are supported right now?',
+      a:'All current IEEE Transactions, IEEE Conference (IEEEtran.cls), ACM Master Article Template (acmart.cls), and ACM SIGCONF/SIGCHI proceedings variants. We track class-file updates within a week of release.' },
+    { q:'How do you handle complex equations and TikZ figures?',
+      a:'Equations are parsed into MathML and re-emitted in the target class — no image fallback. TikZ is preserved as source and recompiled; custom macros are inlined where safe.' },
+    { q:'What actually happens to my PDF after I upload it?',
+      a:"Files are saved to a sandboxed temporary directory unique to each job and deleted once the conversion completes. Nothing is retained on the server — the system is designed for zero file persistence." },
+    { q:'What input formats are accepted?',
+      a:'You can upload a PDF, a LaTeX .tex file, or a project ZIP archive containing a .tex file and any associated assets (figures, bibliography files, style files).' },
+    { q:'What if the compile fails?',
+      a:'The Comp agent retries LaTeX compilation up to 3 times, surfacing actionable log snippets for each failure. Structured error reports are available in the job detail view.' },
+    { q:'Can I run this locally or self-host?',
+      a:'Yes — the entire system runs locally on your machine as a Python HTTP server on port 8080. No data leaves your network during processing. Perfect for pre-publication manuscripts under embargo.' },
+  ];
+  return (
+    <section id="faq" style={{ padding: '80px 64px', background: T.cream }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.8fr', gap: 64 }}>
+        <div>
+          <Folio>§ VI · Queries</Folio>
+          <h2 style={{
+            fontFamily: "'Source Serif 4', serif", fontSize: 44,
+            margin: '8px 0 22px', fontWeight: 450, letterSpacing: '-0.02em',
+          }}>Frequently<br />asked.</h2>
+          <div style={{
+            fontFamily: "'Spectral', serif", fontStyle: 'italic',
+            color: T.muted, fontSize: 14, lineHeight: 1.65,
+          }}>
+            Didn't find yours? Write to us at<br />
+            <a href="mailto:pne007@latech.edu" style={{
+              color: accent, fontStyle: 'normal', textDecoration: 'none', fontWeight: 500,
+            }}>pne007@latech.edu</a>
+          </div>
+        </div>
+        <div>
+          <Rule />
+          {items.map((it, i) => (
+            <div key={it.q} style={{ borderBottom: `1px solid ${T.rule}` }}>
+              <button
+                onClick={() => setOpen(open === i ? -1 : i)}
+                style={{
+                  width: '100%', border: 'none', background: 'transparent',
+                  padding: '20px 0', cursor: 'pointer', textAlign: 'left',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 20,
+                }}>
+                <div style={{ display: 'flex', gap: 16, alignItems: 'baseline' }}>
+                  <Folio style={{ color: accent, flexShrink: 0 }}>{String(i+1).padStart(2,'0')}</Folio>
+                  <div style={{
+                    fontFamily: "'Source Serif 4', serif", fontSize: 20,
+                    fontWeight: 500, letterSpacing: '-0.01em', color: T.ink,
+                  }}>{it.q}</div>
+                </div>
+                <div style={{
+                  fontFamily: "'Source Serif 4', serif", fontSize: 26, color: accent,
+                  lineHeight: 1, flexShrink: 0,
+                  transition: 'transform 200ms',
+                  transform: open === i ? 'rotate(45deg)' : 'none',
+                }}>+</div>
+              </button>
+              {open === i && (
+                <div style={{
+                  fontFamily: "'Spectral', serif", fontSize: 16,
+                  lineHeight: 1.65, color: T.inkSoft, paddingBottom: 22, maxWidth: 600,
+                }}>{it.a}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+};
+
+// ─── Footer ───────────────────────────────────────────────────────────────────
+const Footer = ({ accent }) => (
+  <footer style={{ padding: '56px 64px 32px', background: T.ink, color: T.paper }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 40, marginBottom: 44 }}>
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+          <div style={{
+            width: 34, height: 34, borderRadius: '50%',
+            background: accent, color: T.paper,
+            display: 'grid', placeItems: 'center',
+            fontFamily: "'Source Serif 4', serif", fontStyle: 'italic',
+            fontSize: 20, fontWeight: 500,
+          }}>P</div>
+          <div style={{ fontFamily: "'Source Serif 4', serif", fontSize: 20, fontWeight: 500 }}>
+            Paper Parser
+          </div>
+        </div>
+        <div style={{
+          fontFamily: "'Spectral', serif", fontSize: 15, fontStyle: 'italic',
+          color: '#C9BEAE', lineHeight: 1.6, maxWidth: 340,
+        }}>
+          A typesetting instrument for researchers who have better things to do
+          than realign column gutters at 2 a.m.
+        </div>
+        <div style={{ marginTop: 18 }}>
+          <a href="mailto:pne007@latech.edu" style={{
+            fontFamily: "'IBM Plex Mono', monospace", fontSize: 11,
+            letterSpacing: '0.12em', color: accent, textDecoration: 'none',
+          }}>pne007@latech.edu</a>
+        </div>
+      </div>
+
+      {[
+        { h:'Navigate', l:[
+          { t:'How it works', h:'#how-it-works' },
+          { t:'Convert a paper', h:'#convert' },
+          { t:'Compare formats', h:'#compare' },
+          { t:'Pricing', h:'#pricing' },
+          { t:'FAQ', h:'#faq' },
+        ]},
+        { h:'System', l:[
+          { t:'Job status', h:'#convert' },
+          { t:'Job detail', h:'/job.html' },
+          { t:'API health', h:'/api/health' },
+          { t:'Jobs list', h:'/api/jobs' },
+        ]},
+        { h:'Resources', l:[
+          { t:'Louisiana Tech University', h:'https://latech.edu' },
+          { t:'IEEE templates', h:'https://www.ieee.org/conferences/publishing/templates.html' },
+          { t:'ACM templates', h:'https://www.acm.org/publications/proceedings-template' },
+          { t:'Overleaf', h:'https://overleaf.com' },
+        ]},
+      ].map(col => (
+        <div key={col.h}>
+          <Folio style={{ color: '#C9BEAE', marginBottom: 14 }}>{col.h}</Folio>
+          {col.l.map(item => (
+            <div key={item.t} style={{ padding: '5px 0' }}>
+              <a href={item.h} style={{
+                fontFamily: "'Spectral', serif", fontSize: 15,
+                color: T.paper, textDecoration: 'none',
+              }}>{item.t}</a>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+
+    <div style={{ height: 1, background: '#3a312a' }} />
+    <div style={{
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+      marginTop: 22, flexWrap: 'wrap', gap: 10,
+    }}>
+      <Folio style={{ color: '#8A7F73' }}>© 2026 Paper Parser · Typeset in Source Serif 4 &amp; Spectral</Folio>
+      <Folio style={{ color: '#8A7F73' }}>pne007@latech.edu · Louisiana Tech University</Folio>
+    </div>
+  </footer>
+);
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+const App = () => {
+  const [accent, setAccent] = React.useState(T.rust);
+  return (
+    <>
+      <Nav accent={accent} onAccentChange={setAccent} />
+      <Hero accent={accent} />
+      <HowItWorks accent={accent} />
+      <ConverterWidget accent={accent} />
+      <Features accent={accent} />
+      <BeforeAfter accent={accent} />
+      <Pricing accent={accent} />
+      <FAQ accent={accent} />
+      <Footer accent={accent} />
+    </>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
 </body>
 </html>

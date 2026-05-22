@@ -1,0 +1,43 @@
+\documentclass[sigconf]{acmart}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{placeins}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{amsmath}
+
+\graphicspath{{./}}
+
+\begin{document}
+\title{Attention Is All You Need for Mini Batches}
+\author{A. Vaswani}
+\author{N. Shazeer}
+\begin{abstract}
+We study a compact sequence model that uses only attention blocks.
+\end{abstract}
+\keywords{transformer, attention, sequence modeling}
+\setcopyright{none}
+\settopmatter{printacmref=false, printccs=false}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\maketitle
+\thispagestyle{plain}
+\pagestyle{plain}
+\section{Introduction}
+Attention-only architectures reduce path length and improve parallelism.
+We evaluate small machine translation tasks and report latency.
+
+\FloatBarrier
+\section{Method}
+Given tokens $x_1,\dots,x_n$, self-attention computes
+\begin{equation}
+\mathrm{Attn}(Q,K,V)=\mathrm{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V.
+\end{equation}
+
+\FloatBarrier
+\section{Conclusion}
+The model remains competitive while reducing engineering complexity.
+
+\FloatBarrier
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+\end{document}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
@@ -41,6 +42,7 @@ def compile_project(project_dir: Path, max_repairs: int = 2) -> tuple[str, Compi
         if snippet:
             log_snippets.append(snippet)
         if status == "success":
+            fidelity_signals = _analyze_compile_artifacts(project_dir, main)
             return (
                 "success",
                 CompileArtifacts(
@@ -53,6 +55,7 @@ def compile_project(project_dir: Path, max_repairs: int = 2) -> tuple[str, Compi
                     "commands": commands_run,
                     "repairs": repair_notes,
                     "log_snippets": log_snippets,
+                    "fidelity_signals": fidelity_signals,
                     "suggested_fixes": [],
                 },
             )
@@ -60,6 +63,7 @@ def compile_project(project_dir: Path, max_repairs: int = 2) -> tuple[str, Compi
         if attempt < max_repairs:
             repair_notes.append(_attempt_repair(project_dir, attempt))
 
+    fidelity_signals = _analyze_compile_artifacts(project_dir, main)
     return (
         "failed",
         CompileArtifacts(
@@ -72,6 +76,7 @@ def compile_project(project_dir: Path, max_repairs: int = 2) -> tuple[str, Compi
             "commands": commands_run,
             "repairs": repair_notes,
             "log_snippets": log_snippets,
+            "fidelity_signals": fidelity_signals,
             "suggested_fixes": [
                 "Inspect missing packages in main.log",
                 "Confirm bibliography file exists and matches \\bibliography{references}",
@@ -209,3 +214,75 @@ def _attempt_repair(project_dir: Path, attempt: int) -> str:
 
 def _tail(text: str, lines: int = 25) -> str:
     return "\n".join(text.splitlines()[-lines:])
+
+
+_CITE_RE = re.compile(r"\\cite\{([^}]+)\}")
+_INCLUDEGRAPHICS_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")
+_UNDEFINED_CITATION_RE = re.compile(r"Citation [`']([^`']+)[`'] .* undefined", re.I)
+_UNDEFINED_REFERENCE_RE = re.compile(r"Reference [`']([^`']+)[`'] .* undefined", re.I)
+_MISSING_FILE_RE = re.compile(r"File: ([^\s]+(?:png|jpg|jpeg|pdf|eps)) .*?not found", re.I)
+_MISSING_TEX_FILE_RE = re.compile(r"! LaTeX Error: File [`']([^`']+)[`'] not found", re.I)
+
+
+def _analyze_compile_artifacts(project_dir: Path, main: Path) -> dict:
+    """Extract cheap post-compile fidelity signals from LaTeX outputs."""
+    main_text = main.read_text(encoding="utf-8", errors="ignore") if main.exists() else ""
+    log_text = (project_dir / "main.log").read_text(encoding="utf-8", errors="ignore") if (project_dir / "main.log").exists() else ""
+    bbl_text = (project_dir / "main.bbl").read_text(encoding="utf-8", errors="ignore") if (project_dir / "main.bbl").exists() else ""
+
+    citation_keys: set[str] = set()
+    for match in _CITE_RE.findall(main_text):
+        for key in match.split(","):
+            clean = key.strip()
+            if clean:
+                citation_keys.add(clean)
+
+    figure_paths = [p.strip() for p in _INCLUDEGRAPHICS_RE.findall(main_text) if p.strip()]
+    missing_figure_files: list[str] = []
+    for raw_path in figure_paths:
+        candidate = project_dir / raw_path
+        if candidate.exists():
+            continue
+        # TeX can resolve extension-less paths; try common suffixes.
+        suffixes = ["", ".png", ".jpg", ".jpeg", ".pdf", ".eps"]
+        resolved = any((project_dir / f"{raw_path}{suffix}").exists() for suffix in suffixes)
+        if not resolved:
+            missing_figure_files.append(raw_path)
+
+    undefined_citations = sorted(set(_UNDEFINED_CITATION_RE.findall(log_text)))
+    undefined_refs = sorted(set(_UNDEFINED_REFERENCE_RE.findall(log_text)))
+    missing_log_files = sorted(set(_MISSING_FILE_RE.findall(log_text) + _MISSING_TEX_FILE_RE.findall(log_text)))
+    overfull_hbox_count = len(re.findall(r"Overfull \\hbox", log_text))
+    underfull_hbox_count = len(re.findall(r"Underfull \\hbox", log_text))
+    overfull_vbox_count = len(re.findall(r"Overfull \\vbox", log_text))
+    underfull_vbox_count = len(re.findall(r"Underfull \\vbox", log_text))
+    pages = _extract_page_count(log_text)
+
+    return {
+        "citation_key_count": len(citation_keys),
+        "undefined_citation_count": len(undefined_citations),
+        "undefined_citations": undefined_citations[:10],
+        "undefined_reference_count": len(undefined_refs),
+        "undefined_references": undefined_refs[:10],
+        "figure_include_count": len(figure_paths),
+        "missing_figure_count": len(missing_figure_files),
+        "missing_figure_files": missing_figure_files[:10],
+        "missing_log_file_count": len(missing_log_files),
+        "missing_log_files": missing_log_files[:10],
+        "bibliography_entry_count": len(re.findall(r"\\bibitem\b|@", bbl_text)),
+        "overfull_hbox_count": overfull_hbox_count,
+        "underfull_hbox_count": underfull_hbox_count,
+        "overfull_vbox_count": overfull_vbox_count,
+        "underfull_vbox_count": underfull_vbox_count,
+        "page_count": pages,
+    }
+
+
+def _extract_page_count(log_text: str) -> int | None:
+    match = re.search(r"Output written on .* \((\d+) pages?", log_text)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None

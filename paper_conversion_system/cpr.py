@@ -19,10 +19,16 @@ def parse_project_to_cpr(input_path: Path, source_format: str) -> CanonicalPaper
     keywords = _extract_keywords(text)
     preamble = _extract_preamble(text)
 
+    source_bib = _load_source_bibliography(input_path)
+
     metadata = {
         "source_format": source_format,
         "main_tex": str(main_tex),
         "source_root": str(main_tex.parent),
+        "source_latex_expanded": text,
+        "source_preamble": preamble,
+        "source_has_real_bib": bool(source_bib),
+        "source_bib_text": source_bib,
         "acknowledgments": _extract_acknowledgments(text),
         "ccs_concepts": _extract_ccs_concepts(text),
         "ccsxml": _extract_ccsxml(text),
@@ -161,6 +167,29 @@ def _extract_references(input_path: Path) -> list[Reference]:
     return refs
 
 
+def _load_source_bibliography(input_path: Path) -> str:
+    """Return the richest .bib content from source, if available.
+
+    Preference order:
+    1. references.bib
+    2. largest .bib file in project root
+    """
+    bibs = list(input_path.glob("*.bib")) if input_path.is_dir() else list(input_path.parent.glob("*.bib"))
+    if not bibs:
+        return ""
+    preferred = None
+    for bib in bibs:
+        if bib.name.lower() == "references.bib":
+            preferred = bib
+            break
+    if preferred is None:
+        preferred = max(bibs, key=lambda p: p.stat().st_size if p.exists() else 0)
+    try:
+        return preferred.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
 def _iter_bib_entries(raw: str):
     """Yield complete @type{...} entries by tracking brace balance."""
     i = 0
@@ -277,6 +306,80 @@ _MACRO_TRIGGERS = (
     "\\def\\",
     "\\let\\",
 )
+
+
+def brace_scan(text: str, start: int) -> int:
+    """Return the index just past the closing '}' that balances text[start] == '{'.
+
+    Returns ``start`` unchanged if text[start] is not '{' or no balance found.
+    Public alias of :func:`_brace_scan`; use this when other modules need the
+    shared brace-balanced scanner so we have a single implementation.
+    """
+    return _brace_scan(text, start)
+
+
+def strip_balanced_command(text: str, command: str, arg_count: int) -> tuple[str, int]:
+    """Remove every occurrence of ``command`` plus its [opt] and {arg} groups.
+
+    Walks the source text counting braces so nested groups inside arguments are
+    handled correctly (the regex form ``\\cmd\\{[^}]*\\}`` silently truncates on
+    nested commands).  Returns the modified text and the number of strip
+    operations performed.
+
+    A token-boundary check ensures ``\\acmDOI`` does not match ``\\acmDOIfake``.
+    """
+    out: list[str] = []
+    i = 0
+    count = 0
+    n = len(text)
+    cmd_len = len(command)
+    while i < n:
+        if not text.startswith(command, i):
+            out.append(text[i])
+            i += 1
+            continue
+        next_idx = i + cmd_len
+        if next_idx < n and (text[next_idx].isalpha() or text[next_idx] == "@"):
+            out.append(text[i])
+            i += 1
+            continue
+
+        scan = next_idx
+        while scan < n and text[scan] in " \t":
+            scan += 1
+        # Optional [bracket] argument (e.g. \acmConference[short]{...}{...}{...}).
+        if scan < n and text[scan] == "[":
+            close = text.find("]", scan)
+            if close == -1:
+                out.append(text[i])
+                i += 1
+                continue
+            scan = close + 1
+        consumed = 0
+        ok = True
+        while consumed < arg_count:
+            while scan < n and text[scan] in " \t\n":
+                scan += 1
+            if scan >= n or text[scan] != "{":
+                ok = False
+                break
+            end = brace_scan(text, scan)
+            if end == scan:
+                ok = False
+                break
+            scan = end
+            consumed += 1
+        if not ok:
+            out.append(text[i])
+            i += 1
+            continue
+        while scan < n and text[scan] in " \t":
+            scan += 1
+        if scan < n and text[scan] == "\n":
+            scan += 1
+        count += 1
+        i = scan
+    return "".join(out), count
 
 
 def _brace_scan(text: str, start: int) -> int:

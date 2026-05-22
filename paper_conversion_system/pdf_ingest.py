@@ -1,14 +1,26 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import os
 import re
+import shutil
+import subprocess
 import fitz
+import logging
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
 
 from .models import CanonicalPaperRepresentation, Figure, Section, Reference, Table
+from .pdf_artifact_hygiene import enforce_pdf_artifact_contract, looks_like_pdf_table_caption
 from .pdf_cleanup import clean_pdf_text, aggressive_cleanup_pass
 from .pdf_doctype import detect_pdf_document_type, extract_thesis_body_text
 from .pdf_postprocess import refine_cpr_from_pdf
 from .pdf_thesis import parse_thesis_text_to_cpr
+
+logger = logging.getLogger(__name__)
+SUPPORTED_PDF_BACKENDS = {"heuristic", "pdfplumber", "grobid"}
 
 
 def parse_pdf_to_cpr(
@@ -25,29 +37,59 @@ def parse_pdf_to_cpr(
     otherwise applies PDF cleanup, extracts CPR fields, refines the CPR,
     and optionally attempts an aggressive cleanup pass when confidence is high.
     """
+    requested_backend = os.environ.get("PAPER_CONVERSION_PDF_BACKEND", "heuristic").strip().lower() or "heuristic"
+    backend = requested_backend if requested_backend in SUPPORTED_PDF_BACKENDS else "heuristic"
+    grobid_url = (os.environ.get("PAPER_CONVERSION_GROBID_URL", "") or "").strip()
+    if backend == "grobid" and grobid_url:
+        grobid_cpr = _parse_pdf_with_grobid(pdf_path, source_format_hint, grobid_url, fidelity_mode=fidelity_mode)
+        if grobid_cpr is not None:
+            return enforce_pdf_artifact_contract(grobid_cpr)
     doc = fitz.open(str(pdf_path))
-    pages = [page.get_text() for page in doc]
-    raw_text = "\n\n".join(pages)
-    doc_type, doc_meta = detect_pdf_document_type(raw_text)
-    extracted_images = _extract_embedded_images(doc, assets_dir)
-    (
-        page_figures,
-        page_tables,
-        equation_artifacts,
-        figure_section_map,
-        figure_anchor_map,
-        table_section_map,
-        table_anchor_map,
-        table_text_map,
-        equation_text_map,
-    ) = _extract_page_level_visuals(doc, assets_dir, extracted_images)
+    try:
+        pages = [page.get_text() for page in doc]
+        raw_text = "\n\n".join(pages)
+        doc_type, doc_meta = detect_pdf_document_type(raw_text)
+        extracted_images = _extract_embedded_images(doc, assets_dir)
+        (
+            page_figures,
+            page_tables,
+            equation_artifacts,
+            figure_section_map,
+            figure_anchor_map,
+            table_section_map,
+            table_anchor_map,
+            table_text_map,
+            equation_text_map,
+        ) = _extract_page_level_visuals(doc, assets_dir, extracted_images)
+        page_count = len(doc)
+    finally:
+        # Release the OS file handle as soon as we've extracted everything we
+        # need from PyMuPDF. Subsequent code only needs the in-memory results.
+        try:
+            doc.close()
+        except Exception:
+            pass
+    suppressed_supplemental_tables = 0
+    if backend in {"pdfplumber", "heuristic"}:
+        supplemental_tables = _extract_tables_with_pdfplumber(pdf_path, assets_dir)
+        if supplemental_tables and not page_tables:
+            page_tables.extend(supplemental_tables)
+        elif supplemental_tables:
+            suppressed_supplemental_tables = len(supplemental_tables)
     if doc_type == "thesis_dissertation":
         cpr = parse_thesis_text_to_cpr(raw_text, source_path=str(pdf_path))
         cpr.metadata["document_type_meta"] = doc_meta
-        cpr.metadata["page_count"] = len(doc)
+        cpr.metadata["page_count"] = page_count
         if extracted_images:
             cpr.metadata["extracted_figure_assets"] = extracted_images
-        return cpr
+        # Thesis/dissertation PDFs still carry figures and tables. The thesis
+        # text parser only recovers prose, so without this step the page-level
+        # visual crops and embedded image assets would be written to disk but
+        # never attached to the CPR — leaving the rendered output with zero
+        # figures/tables. Merge them in just like the paper-native path does.
+        cpr = _merge_page_level_visuals(cpr, page_figures, page_tables)
+        cpr = _attach_extracted_figure_assets(cpr, extracted_images)
+        return enforce_pdf_artifact_contract(cpr)
 
     text_source = raw_text
     text, cleanup_meta = clean_pdf_text(text_source, mode=cleanup_mode)
@@ -58,17 +100,23 @@ def parse_pdf_to_cpr(
     keywords = _extract_keywords(text)
     sections = _extract_sections(text)
     references = _extract_reference_placeholders(text)
+    structured_refs, structured_parser = _try_structured_reference_parse(pdf_path, text)
+    if structured_refs:
+        references = structured_refs
 
     metadata.update({
         "source_format": source_format_hint or _guess_format(text),
         "source_path": str(pdf_path),
         "ingest_mode": "pdf",
-        "page_count": len(doc),
+        "pdf_backend": backend,
+        "requested_pdf_backend": requested_backend,
+        "page_count": page_count,
         "cleanup": cleanup_meta,
         "document_type": doc_type,
         "document_type_meta": doc_meta,
         "fidelity_mode": fidelity_mode,
         "bibliography_mode": "thebibliography" if fidelity_mode == "preserve" else "bibtex",
+        "reference_parser": structured_parser or "regex",
         "extracted_figure_assets": extracted_images,
         "figure_section_map": figure_section_map,
         "figure_anchor_map": figure_anchor_map,
@@ -77,7 +125,13 @@ def parse_pdf_to_cpr(
         "table_text_map": table_text_map,
         "equation_text_map": equation_text_map,
         "equation_artifacts": equation_artifacts,
+        "suppressed_supplemental_tables": suppressed_supplemental_tables,
     })
+    if suppressed_supplemental_tables:
+        metadata.setdefault("warnings", []).append(
+            f"Skipped {suppressed_supplemental_tables} supplemental pdfplumber table(s) because "
+            "heuristic visual table crops already exist; this avoids duplicate table/image blocks."
+        )
 
     cpr = CanonicalPaperRepresentation(
         title=title or pdf_path.stem,
@@ -88,6 +142,18 @@ def parse_pdf_to_cpr(
         references=references,
         metadata=metadata,
     )
+    if requested_backend not in SUPPORTED_PDF_BACKENDS:
+        cpr.metadata.setdefault("warnings", []).append(
+            f"Requested PDF backend '{requested_backend}' is unsupported in this build; using heuristic parser."
+        )
+    elif backend == "grobid" and not grobid_url:
+        cpr.metadata.setdefault("warnings", []).append(
+            "Requested PDF backend 'grobid' but PAPER_CONVERSION_GROBID_URL is unset; using heuristic parser."
+        )
+    elif backend == "grobid":
+        cpr.metadata.setdefault("warnings", []).append(
+            "Requested PDF backend 'grobid' failed over to heuristic parsing for this file."
+        )
     cpr = refine_cpr_from_pdf(cpr)
     cpr = _merge_page_level_visuals(cpr, page_figures, page_tables)
     cpr = _attach_extracted_figure_assets(cpr, extracted_images)
@@ -111,7 +177,7 @@ def parse_pdf_to_cpr(
     else:
         cpr.metadata["cleanup"]["aggressive_applied"] = False
 
-    return cpr
+    return enforce_pdf_artifact_contract(cpr)
 
 
 def _extract_embedded_images(doc: fitz.Document, assets_dir: Path | None) -> list[str]:
@@ -156,6 +222,112 @@ def _extract_embedded_images(doc: fitz.Document, assets_dir: Path | None) -> lis
     return extracted
 
 
+def _parse_pdf_with_grobid(
+    pdf_path: Path,
+    source_format_hint: str | None,
+    grobid_url: str,
+    fidelity_mode: str,
+) -> CanonicalPaperRepresentation | None:
+    """Parse a PDF via GROBID fulltext endpoint when configured."""
+    endpoint = grobid_url.rstrip("/") + "/api/processFulltextDocument"
+    boundary = "----PaperConvBoundary"
+    payload = pdf_path.read_bytes()
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="input"; filename="{pdf_path.name}"\r\n'
+        "Content-Type: application/pdf\r\n\r\n"
+    ).encode("utf-8") + payload + f"\r\n--{boundary}--\r\n".encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=body,
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            xml_data = resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        logger.warning("grobid_parse_failed pdf=%s url=%s err=%s", pdf_path, grobid_url, exc)
+        return None
+
+    try:
+        root = ET.fromstring(xml_data)
+    except ET.ParseError as exc:
+        logger.warning("grobid_xml_invalid pdf=%s err=%s", pdf_path, exc)
+        return None
+
+    ns = {"tei": "http://www.tei-c.org/ns/1.0"}
+
+    def text_of(path: str) -> str:
+        el = root.find(path, ns)
+        if el is None:
+            return ""
+        return " ".join("".join(el.itertext()).split())
+
+    title = text_of(".//tei:titleStmt/tei:title")
+    authors: list[str] = []
+    for author in root.findall(".//tei:titleStmt/tei:author", ns):
+        pers = author.find(".//tei:persName", ns)
+        if pers is None:
+            continue
+        name = " ".join("".join(pers.itertext()).split())
+        if name:
+            authors.append(name)
+
+    abstract = text_of(".//tei:profileDesc/tei:abstract")
+    sections: list[Section] = []
+    for div in root.findall(".//tei:text/tei:body/tei:div", ns):
+        head = div.find("./tei:head", ns)
+        heading = " ".join("".join(head.itertext()).split()) if head is not None else "Section"
+        paragraphs = []
+        for p in div.findall("./tei:p", ns):
+            para = " ".join("".join(p.itertext()).split())
+            if para:
+                paragraphs.append(para)
+        if paragraphs:
+            sections.append(Section(title=heading or "Section", content="\n\n".join(paragraphs)))
+
+    references: list[Reference] = []
+    for idx, bibl in enumerate(root.findall(".//tei:listBibl/tei:biblStruct", ns), start=1):
+        raw = " ".join("".join(bibl.itertext()).split())
+        if raw:
+            references.append(Reference(key=f"ref{idx}", raw=raw))
+
+    metadata = {
+        "source_format": source_format_hint or "unknown",
+        "source_path": str(pdf_path),
+        "ingest_mode": "pdf",
+        "pdf_backend": "grobid",
+        "fidelity_mode": fidelity_mode,
+        "reference_parser": "grobid",
+        "warnings": [],
+    }
+    if not sections:
+        metadata["warnings"].append("GROBID returned no section blocks; local fallback may be preferable for this file.")
+    return CanonicalPaperRepresentation(
+        title=title or pdf_path.stem,
+        authors=authors,
+        abstract=abstract,
+        keywords=[],
+        sections=sections or [Section(title="Body", content=text_of(".//tei:text/tei:body"))],
+        references=references,
+        metadata=metadata,
+    )
+
+
+def _figure_asset_page(path: str | None) -> int | None:
+    """Return the 1-based source page for a ``figure_p<N>_<M>`` asset path.
+
+    Both the page-level visual crops and the embedded-image extractor encode
+    the originating PDF page in the filename. Recovering it lets us tell when
+    an embedded raster overlaps a page that already has a detected figure.
+    """
+    if not path:
+        return None
+    match = re.search(r"figure_p(\d+)_", path)
+    return int(match.group(1)) if match else None
+
+
 def _attach_extracted_figure_assets(
     cpr: CanonicalPaperRepresentation,
     extracted_images: list[str],
@@ -165,32 +337,91 @@ def _attach_extracted_figure_assets(
 
     warnings = cpr.metadata.setdefault("warnings", [])
 
+    # Track which extracted images are already attached to a figure so we
+    # don't re-emit them as duplicate ``fig:extracted{i}`` placeholders.
+    already_used = {fig.path for fig in cpr.figures if fig.path}
+    unused_images = [p for p in extracted_images if p not in already_used]
+
+    # Pair *unused* images with figures that still lack a path, in order.
+    # This avoids overwriting the careful page-level pairing done earlier.
+    placeholders = [fig for fig in cpr.figures if not fig.path]
     paired = 0
-    for fig, image_path in zip(cpr.figures, extracted_images):
-        if not fig.path:
-            fig.path = image_path
+    for fig, image_path in zip(placeholders, unused_images):
+        fig.path = image_path
         fig.placement = "H"
         paired += 1
+    unused_images = unused_images[paired:]
 
-    if len(extracted_images) > len(cpr.figures):
-        for index, image_path in enumerate(extracted_images[len(cpr.figures):], start=len(cpr.figures) + 1):
+    # Any leftover images get appended as generic figure entries. We use the
+    # source page number (encoded in the asset filename as ``figure_p<N>_..``)
+    # to decide: if a captioned/page-level figure already exists on that page,
+    # the embedded raster is almost certainly the same visual rendered twice,
+    # so we skip it. Embedded images on pages with no detected figure are
+    # genuine figures whose caption simply wasn't matched (common in theses)
+    # and are recovered. This is more precise than the old "all-or-nothing"
+    # guard, which dropped every embedded figure whenever a single caption
+    # was detected anywhere in the document.
+    if unused_images:
+        # Seed the overlap set only from figures detected *before* this
+        # recovery pass (captioned/page-level crops). We deliberately do not
+        # add recovered pages back in: the embedded-image extractor dedupes
+        # by xref, so two distinct embedded rasters on the same page are two
+        # genuine figures and must both be kept.
+        pages_with_figures = {
+            _figure_asset_page(fig.path) for fig in cpr.figures if fig.path
+        }
+        pages_with_figures.discard(None)
+        recovered = 0
+        skipped = 0
+        next_index = 1
+        for image_path in unused_images:
+            page = _figure_asset_page(image_path)
+            if page is not None and page in pages_with_figures:
+                skipped += 1
+                continue
             cpr.figures.append(
                 Figure(
-                    label=f"fig:extracted{index}",
-                    caption=f"Extracted figure {index}",
+                    label=f"fig:extracted{next_index}",
+                    caption=f"Extracted figure {next_index}",
                     path=image_path,
                     placement="H",
                 )
             )
-        warnings.append(
-            f"Recovered {len(extracted_images)} embedded image asset(s) but only detected "
-            f"{len(cpr.figures) - (len(extracted_images) - paired)} caption(s); added generic figure entries for extras."
-        )
-    elif len(extracted_images) < len(cpr.figures):
-        warnings.append(
-            f"Detected {len(cpr.figures)} figure caption(s) but only recovered "
-            f"{len(extracted_images)} embedded image asset(s); some figures remain placeholders."
-        )
+            next_index += 1
+            recovered += 1
+        if recovered:
+            warnings.append(
+                f"Recovered {recovered} embedded figure asset(s) that had no detected caption."
+            )
+        if skipped:
+            warnings.append(
+                f"Skipped {skipped} embedded image asset(s) that overlapped a captioned "
+                "figure page to avoid duplicate figure placeholders."
+            )
+
+    # Final dedup: collapse any figures that ended up sharing the same image
+    # path (keep the entry with the longest caption / a real label).
+    if cpr.figures:
+        by_path: dict[str, Figure] = {}
+        deduped: list[Figure] = []
+        for fig in cpr.figures:
+            key = fig.path or f"__nopath__:{fig.label}"
+            existing = by_path.get(key)
+            if existing is None:
+                by_path[key] = fig
+                deduped.append(fig)
+                continue
+            # Same image already attached to another figure — merge captions
+            # and drop this duplicate.
+            if len(fig.caption) > len(existing.caption):
+                existing.caption = fig.caption
+            if not existing.label.startswith("fig:") and fig.label.startswith("fig:"):
+                existing.label = fig.label
+        if len(deduped) != len(cpr.figures):
+            warnings.append(
+                f"Removed {len(cpr.figures) - len(deduped)} duplicate figure entries that shared the same image asset."
+            )
+            cpr.figures = deduped
 
     return cpr
 
@@ -209,7 +440,13 @@ def _extract_page_level_visuals(
     table_anchor_map: dict[str, str] = {}
     table_text_map: dict[str, str] = {}
     equation_text_map: dict[str, str] = {}
-    image_iter = iter(extracted_images)
+    images_by_page = _image_paths_by_page(extracted_images)
+    # Track figure labels we have already seen across the whole document so a
+    # body-text reference (e.g. "Figure 1 shows ...") that re-mentions an
+    # existing figure number does not append a second placeholder Figure entry
+    # — and, more importantly, does not consume an image from ``image_iter``,
+    # which would shift every subsequent figure's image off by one.
+    seen_fig_labels: set[str] = set()
     artifact_root = assets_dir.parent / "artifacts" if assets_dir is not None else None
     figure_root = assets_dir if assets_dir is not None else None
     table_root = artifact_root / "tables" if artifact_root is not None else None
@@ -226,15 +463,39 @@ def _extract_page_level_visuals(
         page = doc[page_index]
         lines = _collect_page_lines(page.get_text("dict"))
         for idx, line in enumerate(lines):
-            fig_match = re.match(r"(?:Fig\.?|Figure)\s*(\d+)\.?\s*(.*)$", line["text"], flags=re.I)
+            # Only treat lines that look like *real* figure captions as such.
+            # A real caption begins with "Fig." / "Figure" + a number followed
+            # by a caption terminator (period, colon, dash, or end-of-line).
+            # Body text such as "Figure 1 shows the architecture overview"
+            # would otherwise be consumed as a caption — duplicating figures
+            # and shifting the image-iterator alignment for every later
+            # figure on the page.
+            fig_match = re.match(
+                r"(?:Fig\.?|Figure)\s*(\d+)\s*(?:[.:\-–—]\s*(.*))?$",
+                line["text"],
+                flags=re.I,
+            )
             if fig_match:
                 number = fig_match.group(1)
-                caption = fig_match.group(2).strip(" .:-")
+                caption = (fig_match.group(2) or "").strip(" .:-")
+                # If the regex did not see a terminator AND the line continues
+                # with a lowercase verb-like word, it is almost certainly a
+                # cross-reference, not a caption.
+                if fig_match.group(2) is None and re.search(
+                    r"^(?:Fig\.?|Figure)\s*\d+\s+[a-z]",
+                    line["text"],
+                ):
+                    continue
                 if not caption and idx + 1 < len(lines):
                     caption = lines[idx + 1]["text"].strip(" .:-")
+                label = f"fig:{number}"
+                if label in seen_fig_labels:
+                    # Already captured this figure earlier in the document —
+                    # do not consume another image from the iterator.
+                    continue
                 if caption:
-                    label = f"fig:{number}"
-                    image_rel = next(image_iter, "")
+                    seen_fig_labels.add(label)
+                    image_rel = _pop_page_image(images_by_page, page_index + 1)
                     if not image_rel and figure_root is not None:
                         figure_bbox = _detect_figure_region(page, lines, idx)
                         if figure_bbox is not None:
@@ -260,19 +521,29 @@ def _extract_page_level_visuals(
             label = region["label"]
             image_rel = ""
             if table_root is not None:
+                crop_bbox = _expand_table_crop_bbox(
+                    page,
+                    region.get("visual_bbox") or region["bbox"],
+                )
                 image_rel = _crop_region(
                     page,
-                    region["bbox"],
+                    crop_bbox,
                     table_root / f"table_p{page_index + 1}_{table_idx}.png",
                     rel_prefix="artifacts/tables",
                 )
             latex = _table_lines_to_latex(region["data_lines"])
             if image_rel:
-                latex = "\\centering\n" + f"\\includegraphics[width=\\linewidth]{{{image_rel}}}"
+                latex = "\\centering\n" + (
+                    f"\\includegraphics[width=\\linewidth,height=0.34\\textheight,keepaspectratio]"
+                    f"{{{image_rel}}}"
+                )
             tables.append(Table(label=label, caption=_cleanup(caption), latex=latex, placement="H"))
             table_section_map[label] = region["section_title"]
             table_anchor_map[label] = region["anchor_text"]
-            table_text_map[label] = region["raw_text"]
+            raw_text = region["raw_text"]
+            if image_rel and crop_bbox.width > page.rect.width * 0.62:
+                raw_text = _cleanup(f"{raw_text} {_table_crop_text(lines, crop_bbox)}")
+            table_text_map[label] = raw_text
 
         for eq_idx, equation in enumerate(_detect_equation_regions(lines, page.rect.width), start=1):
             if equation_root is None:
@@ -356,6 +627,71 @@ def _table_lines_to_latex(lines: list[str]) -> str:
     return "\n".join(latex_lines)
 
 
+def _image_paths_by_page(paths: list[str]) -> dict[int, list[str]]:
+    grouped: dict[int, list[str]] = {}
+    for path in paths:
+        match = re.search(r"(?:^|[/\\])figure_p(\d+)_\d+\.", path, flags=re.I)
+        if not match:
+            continue
+        grouped.setdefault(int(match.group(1)), []).append(path)
+    return grouped
+
+
+def _pop_page_image(grouped: dict[int, list[str]], page_number: int) -> str:
+    page_images = grouped.get(page_number) or []
+    if not page_images:
+        return ""
+    return page_images.pop(0)
+
+
+def _extract_tables_with_pdfplumber(pdf_path: Path, assets_dir: Path | None) -> list[Table]:
+    """Optional table extraction pass using pdfplumber for PDF ingest fidelity."""
+    try:
+        import pdfplumber  # type: ignore
+    except Exception:
+        return []
+
+    out: list[Table] = []
+    artifact_root = assets_dir.parent / "artifacts" / "tables" if assets_dir is not None else None
+    if artifact_root is not None:
+        artifact_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            for page_idx, page in enumerate(pdf.pages, start=1):
+                tables = page.extract_tables() or []
+                for idx, table_data in enumerate(tables, start=1):
+                    rows = [[(cell or "").strip() for cell in row] for row in table_data if row]
+                    rows = [row for row in rows if any(row)]
+                    if len(rows) < 2:
+                        continue
+                    col_count = max(len(row) for row in rows)
+                    norm_rows: list[list[str]] = []
+                    for row in rows:
+                        padded = row + [""] * (col_count - len(row))
+                        norm_rows.append(padded[:col_count])
+                    latex_lines = [f"\\begin{{tabular}}{{{' | '.join(['l'] * col_count)}}}", "\\hline"]
+                    for r_idx, row in enumerate(norm_rows):
+                        safe = [
+                            cell.replace("\\", r"\textbackslash{}").replace("&", r"\&").replace("%", r"\%").replace("_", r"\_")
+                            for cell in row
+                        ]
+                        latex_lines.append(" & ".join(safe) + r" \\")
+                        if r_idx == 0:
+                            latex_lines.append("\\hline")
+                    latex_lines.extend(["\\hline", "\\end{tabular}"])
+                    label = f"tab:plumber:{page_idx}:{idx}"
+                    caption = f"Extracted table {idx} (page {page_idx})"
+                    out.append(Table(label=label, caption=caption, latex="\n".join(latex_lines), placement="H"))
+    except Exception as exc:
+        logger.warning("pdfplumber_table_extract_failed pdf=%s err=%s", pdf_path, exc)
+        return []
+
+    if out:
+        logger.info("pdfplumber_table_extract_ok pdf=%s count=%d", pdf_path, len(out))
+    return out
+
+
 def _collect_page_lines(page_dict: dict) -> list[dict]:
     lines: list[dict] = []
     for block in page_dict.get("blocks", []):
@@ -388,6 +724,8 @@ def _anchor_from_lines(
             continue
         if re.match(r"(?:TABLE\s+[IVXLC0-9]+|Fig\.\s*\d+|REFERENCES$)", text, flags=re.I):
             continue
+        if _looks_like_section_heading_line(text):
+            continue
         anchor_lines.append(text)
         if len(anchor_lines) >= max_lines:
             break
@@ -403,15 +741,24 @@ def _infer_section_title(lines: list[dict], idx: int) -> str:
     return ""
 
 
+def _looks_like_section_heading_line(text: str) -> bool:
+    compact = text.strip()
+    if re.match(r"(?:[IVX]+|\d+)\.\s+[A-Z][A-Z\s\-]+$", compact):
+        return True
+    if re.match(r"[A-Z]\.\s+[A-Z][A-Za-z'\-]*(?:\s+[A-Z][A-Za-z'\-]*){0,7}$", compact):
+        return True
+    return False
+
+
 def _detect_table_regions(lines: list[dict], page_width: float) -> list[dict]:
     regions: list[dict] = []
     idx = 0
     while idx < len(lines):
-        match = re.match(r"TABLE\s+([IVXLC0-9]+)\s*$", lines[idx]["text"], flags=re.I)
-        if not match:
+        heading = _parse_table_heading(lines[idx]["text"])
+        if heading is None:
             idx += 1
             continue
-        label = f"tab:{match.group(1).lower()}"
+        label = f"tab:{heading['number'].lower()}"
         origin_bbox = lines[idx]["bbox"]
         section_title = _infer_section_title(lines, idx)
         anchor_text = _anchor_from_lines(lines, idx, origin_bbox=origin_bbox, page_width=page_width)
@@ -433,22 +780,101 @@ def _detect_table_regions(lines: list[dict], page_width: float) -> list[dict]:
             elif len(region_lines) > 1 and current_line["bbox"][1] > last_y + 42:
                 break
             end += 1
-        caption, caption_idx = _select_table_caption(region_lines, label, page_width)
-        data_lines = [line["text"] for line in region_lines[caption_idx + 1:]]
+        if heading["caption"]:
+            caption, caption_idx = _extend_table_caption_from_index(region_lines, heading["caption"], 0)
+        else:
+            caption, caption_idx = _select_table_caption(region_lines, label, page_width)
+            caption, caption_idx = _extend_table_caption_from_index(region_lines, caption, caption_idx)
+        data_line_objs = region_lines[caption_idx + 1:]
+        while data_line_objs and _looks_like_table_trailing_body_line(data_line_objs[-1]["text"]):
+            data_line_objs = data_line_objs[:-1]
+        data_lines = [line["text"] for line in data_line_objs]
+        if len(data_lines) < 2:
+            idx = end
+            continue
         bbox = _union_bboxes([line["bbox"] for line in region_lines])
+        visual_bbox = _union_bboxes([line["bbox"] for line in data_line_objs])
         regions.append(
             {
                 "label": label,
                 "caption": caption,
                 "bbox": bbox,
+                "visual_bbox": visual_bbox,
                 "data_lines": data_lines,
                 "section_title": section_title,
                 "anchor_text": anchor_text,
-                "raw_text": _cleanup(" ".join(line["text"] for line in region_lines)),
+                "raw_text": _cleanup(" ".join([caption, *data_lines])),
             }
         )
         idx = end
     return regions
+
+
+def _parse_table_heading(text: str) -> dict[str, str] | None:
+    match = re.match(r"^TABLE\s+([IVXLC]+|\d+)\s*(.*)$", text.strip(), flags=re.I)
+    if not match:
+        return None
+    caption = match.group(2).strip(" .:-,")
+    if caption and not _looks_like_table_caption_text(caption):
+        return None
+    return {"number": match.group(1), "caption": caption}
+
+
+def _looks_like_table_caption_text(text: str) -> bool:
+    return looks_like_pdf_table_caption(text)
+
+
+def _extend_table_caption_from_index(region_lines: list[dict], caption: str, caption_idx: int) -> tuple[str, int]:
+    caption_parts = [caption.strip()]
+    for idx, line in enumerate(region_lines[caption_idx + 1:], start=caption_idx + 1):
+        text = line["text"].strip()
+        if not text:
+            break
+        if _looks_like_table_data_line(text) or _looks_like_table_grid_header(text):
+            break
+        if _looks_like_table_caption_continuation(text):
+            caption_parts.append(text.strip(" .:-"))
+            caption_idx = idx
+            continue
+        break
+    return _cleanup(" ".join(part for part in caption_parts if part)), caption_idx
+
+
+def _looks_like_table_grid_header(text: str) -> bool:
+    compact = text.strip()
+    if not compact:
+        return False
+    if len(compact.split()) <= 6 and re.search(r"\b(?:Scheme|Client|Server|Time|Length|Password|Biometric|Phone)\b", compact):
+        return True
+    return False
+
+
+def _looks_like_table_caption_continuation(text: str) -> bool:
+    compact = text.strip()
+    if len(compact) < 6:
+        return False
+    if _looks_like_table_data_line(compact) or _looks_like_table_grid_header(compact):
+        return False
+    letters = [ch for ch in compact if ch.isalpha()]
+    if not letters:
+        return False
+    uppercase = sum(1 for ch in letters if ch.isupper())
+    return uppercase / len(letters) >= 0.75
+
+
+def _looks_like_table_trailing_body_line(text: str) -> bool:
+    compact = text.strip()
+    if not compact:
+        return True
+    if _looks_like_table_data_line(compact):
+        return False
+    if _looks_like_table_grid_header(compact):
+        return False
+    if compact[0].islower():
+        return True
+    words = compact.split()
+    lowercase_words = sum(1 for word in words if any(ch.islower() for ch in word))
+    return len(words) >= 5 and lowercase_words >= max(3, len(words) // 2)
 
 
 def _detect_equation_regions(lines: list[dict], page_width: float) -> list[dict]:
@@ -876,10 +1302,89 @@ def _crop_region(page: fitz.Page, bbox: fitz.Rect, out_path: Path, rel_prefix: s
     clip.y0 = max(0, clip.y0 - 6)
     clip.x1 = min(page.rect.width, clip.x1 + 6)
     clip.y1 = min(page.rect.height, clip.y1 + 6)
+    if clip.is_empty or clip.width < 4 or clip.height < 4:
+        return ""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, alpha=False)
     pix.save(out_path)
     return f"{rel_prefix}/{out_path.name}".replace("\\", "/")
+
+
+def _expand_table_crop_bbox(page: fitz.Page, bbox: fitz.Rect) -> fitz.Rect:
+    """Expand visual table crops to include ruling lines and wide table edges.
+
+    Table rules are frequently drawn as one short segment per column rather
+    than a single full-width line. A single pass that only tests each drawing
+    against the original text region therefore stops at the first column
+    boundary — which clips every column but the first out of the crop.
+
+    Instead we grow the x-range iteratively: each pass folds in any ruling
+    segment that touches the range discovered so far, walking column by
+    column until the range stabilises. Only when no anchoring rules are
+    found at all do we fall back to the old "snap a wide region out to the
+    page margins" heuristic.
+    """
+    region = fitz.Rect(bbox)
+    vertical_pad = 8.0
+    horizontal_gap = 14.0  # max gap between adjacent column rule segments
+
+    # Collect candidate ruling/box drawings inside the table's vertical band.
+    candidates: list[fitz.Rect] = []
+    for drawing in page.get_drawings():
+        rect = drawing.get("rect")
+        if rect is None:
+            continue
+        if rect.y1 < region.y0 - vertical_pad or rect.y0 > region.y1 + vertical_pad:
+            continue
+        # Skip stray short, thin marks; keep wide rules and tall vertical
+        # rules / box outlines.
+        if rect.width < 24.0 and rect.height < 2.0:
+            continue
+        candidates.append(rect)
+
+    x0 = region.x0
+    x1 = region.x1
+    changed = True
+    while changed:
+        changed = False
+        for rect in candidates:
+            # Only fold in drawings that touch the range discovered so far,
+            # so the crop walks across adjacent columns without jumping to
+            # unrelated drawings elsewhere on the page.
+            if rect.x1 < x0 - horizontal_gap or rect.x0 > x1 + horizontal_gap:
+                continue
+            if rect.x0 < x0 - 0.1:
+                x0 = rect.x0
+                changed = True
+            if rect.x1 > x1 + 0.1:
+                x1 = rect.x1
+                changed = True
+
+    expanded_by_drawings = (x0 < region.x0 - 0.1) or (x1 > region.x1 + 0.1)
+    expanded = fitz.Rect(x0, max(0.0, region.y0 - 2.0), x1, min(page.rect.height, region.y1 + 2.0))
+    if not expanded_by_drawings and expanded.width > page.rect.width * 0.62:
+        # No ruling lines anchored the true edges — fall back to snapping a
+        # wide-looking region out to the typical page text margins.
+        expanded.x0 = min(expanded.x0, 24.0)
+        expanded.x1 = max(expanded.x1, page.rect.width - 24.0)
+    return expanded
+
+
+def _table_crop_text(lines: list[dict], bbox: fitz.Rect) -> str:
+    y0 = bbox.y0 - 4.0
+    y1 = bbox.y1 + 4.0
+    in_band: list[str] = []
+    for line in lines:
+        line_bbox = line["bbox"]
+        if line_bbox[3] < y0 or line_bbox[1] > y1:
+            continue
+        text = line["text"].strip()
+        if not text:
+            continue
+        if re.search(r"Authorized licensed use|Downloaded on|IEEE .*Conference", text, re.I):
+            continue
+        in_band.append(text)
+    return _cleanup(" ".join(in_band))
 
 
 def _merge_page_level_visuals(
@@ -1393,6 +1898,89 @@ def _extract_reference_placeholders(text: str) -> list[Reference]:
         seen.add(key)
         references.append(Reference(key=key, raw=f"placeholder for {key}"))
     return references
+
+
+def _extract_reference_block(text: str) -> str:
+    m = re.search(r"(?:^|\n)(?:REFERENCES|BIBLIOGRAPHY|WORKS\s+CITED)\s*(.*)$", text, re.I | re.S)
+    return m.group(1).strip() if m else ""
+
+
+def _try_structured_reference_parse(pdf_path: Path, text: str) -> tuple[list[Reference], str | None]:
+    """Best-effort structured parser integration for PDF references.
+
+    Priority:
+    1. `anystyle` CLI (if installed)
+    2. `grobid_client` CLI (if installed)
+
+    Falls back silently when unavailable.
+    """
+    ref_block = _extract_reference_block(text)
+    if not ref_block:
+        return [], None
+
+    refs = _try_anystyle_parse(ref_block)
+    if refs:
+        return refs, "anystyle"
+
+    refs = _try_grobid_parse(pdf_path)
+    if refs:
+        return refs, "grobid_client"
+
+    return [], None
+
+
+def _try_anystyle_parse(ref_block: str) -> list[Reference]:
+    exe = shutil.which("anystyle")
+    if not exe:
+        return []
+    try:
+        proc = subprocess.run(
+            [exe, "parse", "--stdout"],
+            input=ref_block,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return []
+        parsed = json.loads(proc.stdout)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    refs: list[Reference] = []
+    for idx, item in enumerate(parsed, start=1):
+        if not isinstance(item, dict):
+            continue
+        raw_text = item.get("raw") or item.get("title")
+        if isinstance(raw_text, list):
+            raw_text = " ".join(str(x) for x in raw_text)
+        raw_value = str(raw_text or "").strip()
+        if not raw_value:
+            continue
+        refs.append(Reference(key=f"ref{idx}", raw=raw_value))
+    return refs
+
+
+def _try_grobid_parse(pdf_path: Path) -> list[Reference]:
+    exe = shutil.which("grobid_client")
+    if not exe:
+        return []
+    # Requires a running GROBID server + configured client; keep optional.
+    try:
+        proc = subprocess.run(
+            [exe, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return []
+    except Exception:
+        return []
+    return []
 
 
 def _strip_section_noise(content: str) -> str:

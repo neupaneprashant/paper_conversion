@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from .models import CanonicalPaperRepresentation, Section, Figure, Table, Reference
+from .pdf_artifact_hygiene import looks_like_pdf_table_caption
 
 
 AFFILIATION_HINTS = [
@@ -234,22 +235,51 @@ def _extract_figures_and_tables(cpr: CanonicalPaperRepresentation) -> CanonicalP
             # continuing from the "Fig. N" reference.
             if not caption[0].isupper():
                 continue
-            captions.append(m.group(0).strip())
             label = f"fig:{m.group(1)}"
+            # Dedup by label — body text frequently re-references "Fig. N"
+            # multiple times, and we only want the first caption-shaped match.
+            if any(f.label == label for f in figures):
+                continue
+            captions.append(m.group(0).strip())
             figures.append(Figure(label=label, caption=caption, path=""))
             figure_section_map[label] = section.title
         for m in re.finditer(r"TABLE\s+([IVXLC0-9]+)\s+([^\n]{0,120})", section.content, flags=re.I):
-            caption = (m.group(2) or "").strip(" .:-")
+            caption = (m.group(2) or "").strip(" .:-,")
             if not caption or len(caption) < 12:
                 continue
             if len(caption.split()) < 3:
                 continue
-            captions.append(m.group(0).strip())
+            if not looks_like_pdf_table_caption(caption):
+                continue
             label = f"tab:{m.group(1).lower()}"
+            if any(t.label == label for t in tables):
+                continue
+            captions.append(m.group(0).strip())
             tables.append(Table(label=label, caption=caption, latex="% reconstructed table unavailable"))
             table_section_map[label] = section.title
-    cpr.figures = figures[:4]
-    cpr.tables = tables[:3]
+    # Dedup across sections too (a figure mentioned in multiple sections must
+    # not appear twice in cpr.figures — that is what produced the "repetitive
+    # images" the user reported).
+    seen_fig_labels: set[str] = set()
+    deduped_figures: list[Figure] = []
+    for fig in figures:
+        if fig.label in seen_fig_labels:
+            continue
+        seen_fig_labels.add(fig.label)
+        deduped_figures.append(fig)
+    seen_tab_labels: set[str] = set()
+    deduped_tables: list[Table] = []
+    for tab in tables:
+        if tab.label in seen_tab_labels:
+            continue
+        seen_tab_labels.add(tab.label)
+        deduped_tables.append(tab)
+    # Removed the hard `[:4]` / `[:3]` caps — they silently dropped real
+    # figures and tables from papers with more content, leaving the body
+    # text references dangling against missing floats (the "fragmentation"
+    # users were seeing).
+    cpr.figures = deduped_figures
+    cpr.tables = deduped_tables
     if captions:
         cpr.metadata["detected_captions"] = captions[:50]
     if figure_section_map:
@@ -262,14 +292,57 @@ def _extract_figures_and_tables(cpr: CanonicalPaperRepresentation) -> CanonicalP
 def _clean_section_content(cpr: CanonicalPaperRepresentation) -> CanonicalPaperRepresentation:
     cleaned: list[Section] = []
     for section in cpr.sections:
-        content = section.content
-        content = re.sub(r"(?:Fig\.|Figure)\s*\d+\.?\s*[^\n]{0,120}", " ", content, flags=re.I)
-        content = re.sub(r"TABLE\s+[IVXLC0-9]+\s*[^\n]{0,160}", " ", content, flags=re.I)
+        content = _strip_standalone_visual_captions(section.content)
         content = re.sub(r"\b(?:Scan|Registration)\b\s+\d+(?:\s+\d+)*", " ", content)
         content = re.sub(r"\s+", " ", content).strip()
         cleaned.append(Section(title=section.title, content=content))
     cpr.sections = cleaned
     return cpr
+
+
+def _strip_standalone_visual_captions(content: str) -> str:
+    """Remove caption-only lines without deleting inline figure/table references."""
+    kept: list[str] = []
+    for raw_line in (content or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            kept.append(raw_line)
+            continue
+        if _looks_like_standalone_figure_caption(line):
+            continue
+        if _looks_like_standalone_table_caption(line):
+            continue
+        kept.append(raw_line)
+    return "\n".join(kept)
+
+
+def _looks_like_standalone_figure_caption(line: str) -> bool:
+    match = re.match(r"^(?:Fig\.|Figure)\s*(\d+)\s*(?:[.:\-]\s*)?(.+)$", line, flags=re.I)
+    if not match:
+        return False
+    caption = (match.group(2) or "").strip()
+    if len(caption) < 8 or len(caption.split()) < 3:
+        return False
+    if caption[0].islower():
+        return False
+    if any(bad in caption.lower() for bad in BAD_FIGURE_PHRASES):
+        return False
+    return True
+
+
+def _looks_like_standalone_table_caption(line: str) -> bool:
+    match = re.match(r"^TABLE\s+[IVXLC0-9]+\s+(.+)$", line, flags=re.I)
+    if not match:
+        return False
+    caption = match.group(1).strip()
+    if not caption:
+        return False
+    # A real caption title leads with a capital ("TABLE I FIRST RSSI ...").
+    # An in-sentence cross-reference continues in lowercase prose
+    # ("TABLE I shows the estimated positions") and must not be deleted.
+    if caption[0].islower():
+        return False
+    return len(caption) >= 12 and len(caption.split()) >= 3
 
 
 def _add_subsection_markers(cpr: CanonicalPaperRepresentation) -> CanonicalPaperRepresentation:

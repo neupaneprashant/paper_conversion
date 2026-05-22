@@ -1,14 +1,31 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from pathlib import Path
 import time
 import traceback
 
 from .job_store import merge_job_meta, now_ts, read_job_meta
+from .logging_utils import configure_logging
 from .orchestrator import route_and_run
 from .packaging import create_job_bundle
+
+logger = logging.getLogger(__name__)
+
+
+def _load_openclaw():
+    """Return (driver, provider) using stored OAuth tokens, or (None, None) if unavailable."""
+    try:
+        from .openclaw import load_config_from_disk, OpenClawConversionDriver, OpenClawLLMProvider
+        config = load_config_from_disk()
+        if config is None:
+            return None, None
+        return OpenClawConversionDriver(config), OpenClawLLMProvider(config)
+    except Exception as exc:
+        logger.warning("[OpenClaw] Not available, falling back to local pipeline: %s", exc)
+        return None, None
 
 
 def _build_timeline(result: dict) -> list[dict]:
@@ -37,6 +54,7 @@ def _sleep_if_debug_enabled() -> None:
 
 
 def run_job(job_dir: Path) -> None:
+    configure_logging("worker")
     meta = read_job_meta(job_dir)
     if not meta:
         raise FileNotFoundError(f"Job metadata missing: {job_dir / 'job.json'}")
@@ -65,6 +83,12 @@ def run_job(job_dir: Path) -> None:
             },
         )
 
+    openclaw_driver, openclaw_provider = _load_openclaw()
+    if openclaw_driver:
+        logger.info("[OpenClaw] LLM conversion active (OAuth)")
+    else:
+        logger.info("[OpenClaw] Using local pipeline (no OAuth tokens found)")
+
     try:
         result = route_and_run(
             source_format=meta["source_format"],
@@ -74,6 +98,8 @@ def run_job(job_dir: Path) -> None:
             job_id=meta["job_id"],
             fidelity_mode=meta.get("fidelity_mode", "preserve"),
             stage_callback=stage_callback,
+            openclaw_driver=openclaw_driver,
+            llm_provider=openclaw_provider,
         )
         stage_callback("package")
         bundle = create_job_bundle(job_dir)
@@ -106,6 +132,7 @@ def run_job(job_dir: Path) -> None:
                 "timeline": _build_timeline(result.to_dict()),
                 "failure_kind": failure_kind,
                 "error": error,
+                "conversion_method": result.conversion_method or "local",
             },
         )
     except Exception as exc:

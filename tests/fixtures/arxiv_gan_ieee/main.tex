@@ -1,0 +1,24 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{graphicx}
+\title{Generative Adversarial Networks in Low Data Regimes}
+\author{I. Goodfellow \and Team}
+\begin{document}
+\maketitle
+\begin{abstract}
+This note summarizes training behavior of adversarial objectives.
+\end{abstract}
+\section{Introduction}
+GANs train generator and discriminator simultaneously.
+\section{Objective}
+The minimax game is
+\begin{equation}
+\min_G \max_D \mathbb{E}_{x\sim p_{data}}[\log D(x)] + \mathbb{E}_{z\sim p(z)}[\log(1-D(G(z)))].
+\end{equation}
+\section{Results}
+Small-scale tests recover plausible textures and edges.
+\section{Conclusion}
+Stability depends on architecture and optimization details.
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+\end{document}
+

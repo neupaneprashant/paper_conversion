@@ -21,9 +21,17 @@ INLINE_NOISE_PATTERNS = [
     r"Registration\s+\d+(?:\s+\d+)+",
 ]
 
+# The aggressive pass strips bare figure/table heading tokens. The table
+# pattern only removes a "TABLE <n>" token that is NOT followed by more
+# text on the same span, so it never eats an in-sentence cross-reference
+# ("TABLE I shows the estimated positions") nor an inline caption title
+# ("TABLE I FIRST RSSI VALUE RESULTS" — caption lines are handled wholesale
+# by _strip_standalone_visual_captions instead). ``\b`` forces the numeral
+# to match as a whole token so the regex cannot backtrack ("II" -> "I") to
+# satisfy the lookahead and leave a stray "I" behind in the prose.
 AGGRESSIVE_PATTERNS = [
     r"Fig\.\s*\d+\.\s*[^\n]+",
-    r"TABLE\s+[IVXLC0-9]+",
+    r"TABLE\s+[IVXLC0-9]+\b(?!\s+[A-Za-z])",
 ]
 
 _FRONTMATTER_BOUNDARY_RE = re.compile(r"\b(?:abstract|index\s*terms|keywords|introduction)\b", re.I)

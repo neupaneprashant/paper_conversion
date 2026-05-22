@@ -3,25 +3,585 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Job Detail · Academic Paper Converter</title>
-  <link rel="stylesheet" href="styles.css" />
-  <script defer src="job.js"></script>
+  <title>Job Detail ? Paper Parser</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300..700;1,8..60,300..700&family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #FBF7EE; color: #1C1714;
+      font-family: 'Spectral', serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Nav ─────────────────────────────────────────── */
+    .nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 64px 16px;
+      border-bottom: 1px solid #D9CDB7;
+      background: #FBF7EE;
+      position: sticky; top: 0; z-index: 10;
+    }
+    .nav-logo {
+      display: flex; align-items: center; gap: 12px;
+    }
+    .nav-logo-mark {
+      width: 32px; height: 32px; border-radius: 50%;
+      background: #1C1714; color: #FBF7EE;
+      display: grid; place-items: center;
+      font-family: 'Source Serif 4', serif; font-style: italic;
+      font-size: 18px; font-weight: 500;
+    }
+    .nav-logo-name {
+      font-family: 'Source Serif 4', serif; font-size: 19px;
+      font-weight: 500; letter-spacing: -0.01em; color: #1C1714;
+    }
+    .nav-back {
+      font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      color: #8A7F73; text-decoration: none;
+    }
+    .nav-back:hover { color: #1C1714; }
+
+    /* ── Layout ──────────────────────────────────────── */
+    .page { max-width: 1100px; margin: 0 auto; padding: 0 64px 80px; }
+
+    /* ── Folio / rule ────────────────────────────────── */
+    .folio {
+      font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+      letter-spacing: 0.14em; text-transform: uppercase; color: #8A7F73;
+    }
+    .rule { height: 1px; background: #1C1714; width: 100%; }
+    .rule-thick { height: 2px; background: #1C1714; width: 100%; }
+
+    /* ── Status banner ───────────────────────────────── */
+    .banner {
+      padding: 12px 20px; margin: 28px 0 0;
+      font-family: 'IBM Plex Mono', monospace; font-size: 12px;
+      letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .banner-running { background: #EAE1D0; color: #1C1714; }
+    .banner-ok      { background: #d4edda; color: #1a4a26; }
+    .banner-error   { background: #fde8e3; color: #7a1c0a; }
+    .banner-queued  { background: #EAE1D0; color: #5F6B4A; }
+    .banner[hidden] { display: none; }
+
+    /* ── Section header ──────────────────────────────── */
+    .section-head {
+      display: flex; align-items: baseline;
+      justify-content: space-between; margin: 48px 0 20px;
+    }
+    .section-head h2 {
+      font-family: 'Source Serif 4', serif; font-size: 36px;
+      font-weight: 450; letter-spacing: -0.02em; margin-top: 6px;
+    }
+    .section-head .note {
+      font-family: 'Spectral', serif; font-style: italic;
+      color: #8A7F73; font-size: 14px; max-width: 260px; text-align: right;
+    }
+
+    /* ── Download card ───────────────────────────────── */
+    .download-card {
+      background: #F4EDE0; border: 1px solid #1C1714;
+      padding: 32px; margin-top: 28px;
+    }
+    .download-card .card-label { margin-bottom: 20px; }
+    .download-grid {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
+      margin-top: 20px;
+    }
+    .dl-btn {
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 18px 20px; border: 1px solid #1C1714;
+      text-decoration: none; cursor: pointer;
+      transition: background 150ms, color 150ms;
+    }
+    .dl-btn-primary {
+      background: #1C1714; color: #FBF7EE;
+    }
+    .dl-btn-primary:hover { background: #3A322C; }
+    .dl-btn-secondary {
+      background: transparent; color: #1C1714;
+    }
+    .dl-btn-secondary:hover { background: #EAE1D0; }
+    .dl-btn-accent {
+      background: transparent; color: #1C1714; border: 1px solid #D9CDB7;
+    }
+    .dl-btn-accent:hover { background: #EAE1D0; }
+    .dl-btn .dl-icon {
+      font-family: 'Source Serif 4', serif; font-size: 20px;
+      font-style: italic; line-height: 1;
+    }
+    .dl-btn .dl-title {
+      font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+      letter-spacing: 0.12em; text-transform: uppercase; margin-top: 6px;
+    }
+    .dl-btn .dl-sub {
+      font-family: 'Spectral', serif; font-size: 13px;
+      color: #8A7F73; margin-top: 2px;
+    }
+    .dl-btn-primary .dl-sub { color: #C9BEAE; }
+    .dl-not-ready {
+      padding: 20px; background: #EAE1D0; border: 1px dashed #D9CDB7;
+      font-family: 'Spectral', serif; font-style: italic; color: #8A7F73;
+      font-size: 14px; grid-column: 1 / -1; text-align: center;
+    }
+
+    /* ── Info grid ───────────────────────────────────── */
+    .info-grid {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0;
+      border: 1px solid #1C1714; margin-top: 28px;
+    }
+    .info-cell {
+      padding: 20px 22px;
+      border-right: 1px solid #D9CDB7;
+    }
+    .info-cell:last-child { border-right: none; }
+    .info-cell .ic-label {
+      font-family: 'IBM Plex Mono', monospace; font-size: 9px;
+      letter-spacing: 0.16em; text-transform: uppercase; color: #8A7F73;
+      margin-bottom: 6px;
+    }
+    .info-cell .ic-value {
+      font-family: 'Source Serif 4', serif; font-size: 17px;
+      font-weight: 500; color: #1C1714; word-break: break-all;
+    }
+    .info-cell .ic-value.small {
+      font-family: 'IBM Plex Mono', monospace; font-size: 12px;
+      font-weight: 400; letter-spacing: 0.04em;
+    }
+
+    /* ── Stage timeline ──────────────────────────────── */
+    .timeline {
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      margin-top: 28px;
+    }
+    .tl-item {
+      padding: 16px 16px 20px;
+      border-top: 2px solid #D9CDB7;
+      border-right: 1px solid #D9CDB7;
+    }
+    .tl-item:last-child { border-right: none; }
+    .tl-item.active { border-top-color: #1C1714; }
+    .tl-item.done   { border-top-color: var(--accent, #B14A2B); }
+    .tl-num {
+      font-family: 'IBM Plex Mono', monospace; font-size: 10px;
+      letter-spacing: 0.14em; color: #8A7F73; margin-bottom: 6px;
+    }
+    .tl-item.active .tl-num,
+    .tl-item.done   .tl-num { color: #1C1714; }
+    .tl-name {
+      font-family: 'Source Serif 4', serif; font-size: 16px;
+      font-weight: 500; color: #1C1714;
+    }
+    .tl-agent {
+      font-family: 'IBM Plex Mono', monospace; font-size: 9px;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      color: #8A7F73; margin-top: 4px;
+    }
+
+    /* ── Details / pre ───────────────────────────────── */
+    .detail-panel {
+      border: 1px solid #D9CDB7; padding: 24px;
+      margin-top: 28px; background: #FBF7EE;
+    }
+    .detail-panel h3 {
+      font-family: 'Source Serif 4', serif; font-size: 20px;
+      font-weight: 500; margin-bottom: 14px;
+    }
+    .detail-panel pre {
+      font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+      line-height: 1.6; color: #3A322C; overflow-x: auto;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .detail-panel p {
+      font-size: 14px; line-height: 1.6; color: #3A322C; margin-top: 6px;
+    }
+    .error-panel {
+      border: 1px solid #B14A2B; background: #fde8e3; padding: 24px; margin-top: 28px;
+    }
+    .error-panel h3 {
+      font-family: 'Source Serif 4', serif; font-size: 20px;
+      font-weight: 500; color: #7a1c0a; margin-bottom: 12px;
+    }
+    .error-panel p { font-size: 14px; color: #7a1c0a; margin-top: 6px; }
+
+    /* ── Spinner ─────────────────────────────────────── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 18px; height: 18px; border: 2px solid #D9CDB7;
+      border-top-color: #1C1714; border-radius: 50%;
+      animation: spin 0.8s linear infinite; display: inline-block;
+      vertical-align: middle; margin-right: 8px;
+    }
+
+    /* ── Responsive ──────────────────────────────────── */
+    @media (max-width: 800px) {
+      .page { padding: 0 24px 60px; }
+      .nav { padding: 16px 24px; }
+      .download-grid { grid-template-columns: 1fr; }
+      .info-grid { grid-template-columns: 1fr; }
+      .info-cell { border-right: none; border-bottom: 1px solid #D9CDB7; }
+      .timeline { grid-template-columns: 1fr 1fr; }
+      .tl-item:nth-child(2) { border-right: none; }
+    }
+  </style>
 </head>
 <body>
-  <div class="page">
-    <header class="hero small-hero">
-      <div class="badge">Job Detail</div>
-      <h1>Conversion Job</h1>
-      <p>Track April, Friday, and Comp through conversion, validation, and packaging.</p>
-    </header>
 
-    <main class="container" id="job-detail-root">
-      <section id="job-page-status" class="status-banner" hidden></section>
-      <section class="card info-card">
-        <strong>Loading:</strong>
-        <span>Fetching job details...</span>
-      </section>
-    </main>
+<!-- Nav -->
+<nav class="nav">
+  <div class="nav-logo">
+    <div class="nav-logo-mark">P</div>
+    <div class="nav-logo-name">Paper Parser</div>
+    <span class="folio" style="margin-left:8px">Est. 2026 ? No. 01</span>
   </div>
+  <a href="/" class="nav-back">? Back to converter</a>
+</nav>
+
+<div class="page">
+  <!-- Status banner -->
+  <div id="banner" class="banner banner-running" hidden></div>
+
+  <!-- Downloads section (shown when done) -->
+  <div id="downloads-section" hidden>
+    <div class="section-head">
+      <div>
+        <div class="folio">? I ? Output</div>
+        <h2>Your converted paper.</h2>
+      </div>
+      <div class="note">Download before closing this page.</div>
+    </div>
+    <div class="rule-thick"></div>
+
+    <div class="download-card">
+      <div class="card-label folio">Conversion complete ? Ready to download</div>
+      <div style="font-family:'Spectral',serif; font-style:italic; color:#8A7F73; font-size:14px; margin-top:4px;">
+        Files are stored on the server only while the session is active. Download now.
+      </div>
+      <div id="download-grid" class="download-grid"></div>
+    </div>
+  </div>
+
+  <!-- Job metadata -->
+  <div class="section-head">
+    <div>
+      <div class="folio" id="section-folio">? II ? Job status</div>
+      <h2 id="section-title">Loading...</h2>
+    </div>
+    <div class="note" id="section-note"></div>
+  </div>
+  <div class="rule"></div>
+
+  <!-- Info cells -->
+  <div class="info-grid" id="info-grid">
+    <div class="info-cell"><div class="ic-label">Job ID</div><div class="ic-value small" id="cell-id">?</div></div>
+    <div class="info-cell"><div class="ic-label">Direction</div><div class="ic-value" id="cell-dir">?</div></div>
+    <div class="info-cell"><div class="ic-label">Status</div><div class="ic-value" id="cell-status">?</div></div>
+    <div class="info-cell"><div class="ic-label">Stage</div><div class="ic-value" id="cell-stage">?</div></div>
+    <div class="info-cell"><div class="ic-label">Input file</div><div class="ic-value small" id="cell-input">?</div></div>
+    <div class="info-cell"><div class="ic-label">Timeout</div><div class="ic-value" id="cell-timeout">?</div></div>
+  </div>
+
+  <!-- Pipeline timeline -->
+  <div class="section-head" style="margin-top:40px">
+    <div>
+      <div class="folio">? III ? Pipeline</div>
+      <h2>Stage progress.</h2>
+    </div>
+  </div>
+  <div class="rule"></div>
+  <div class="timeline" id="timeline"></div>
+
+  <!-- Error panel -->
+  <div id="error-panel" class="error-panel" hidden>
+    <h3>Conversion failed</h3>
+    <p id="error-kind"></p>
+    <p id="error-msg"></p>
+  </div>
+
+  <!-- Reports -->
+  <div id="reports-section" hidden>
+    <div class="section-head" style="margin-top:40px">
+      <div>
+        <div class="folio">? IV ? Reports</div>
+        <h2>Structured output.</h2>
+      </div>
+    </div>
+    <div class="rule"></div>
+    <div id="reports-panels"></div>
+  </div>
+
+  <!-- Not found -->
+  <div id="not-found" hidden style="margin-top:48px; text-align:center; padding:60px 0;">
+    <div style="font-family:'Source Serif 4',serif; font-size:56px; font-style:italic; color:#D9CDB7;">?</div>
+    <div style="font-family:'Source Serif 4',serif; font-size:24px; font-weight:500; margin-top:16px;">Job not found</div>
+    <div style="font-family:'Spectral',serif; color:#8A7F73; margin-top:8px;">
+      No job ID was provided, or this job does not exist.
+    </div>
+    <a href="/" style="
+      display:inline-block; margin-top:24px; padding:12px 24px;
+      background:#1C1714; color:#FBF7EE; text-decoration:none;
+      font-family:'IBM Plex Mono',monospace; font-size:11px;
+      letter-spacing:0.12em; text-transform:uppercase;
+    ">? Back to converter</a>
+  </div>
+</div>
+
+<script>
+  // ── Utilities ────────────────────────────────────────────────────────────────
+  function qs(id) { return document.getElementById(id); }
+  function esc(v) {
+    return String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function jobIdFromUrl() {
+    return new URLSearchParams(window.location.search).get('job');
+  }
+
+  // ── Render helpers ───────────────────────────────────────────────────────────
+  const STAGES = [
+    { key:'queued',     label:'Queued',      agent:'?'         },
+    { key:'parse',      label:'Parse',       agent:'CPR'       },
+    { key:'recompose',  label:'Recompose',   agent:'April / Friday' },
+    { key:'compile',    label:'Compile',     agent:'Comp'      },
+  ];
+
+  const STATUS_ORDER = ['queued','running','success','failed'];
+  const STAGE_ORDER  = ['queued','parse','recompose','compile'];
+
+  function stageIndex(stage) {
+    const s = (stage || '').toLowerCase();
+    if (s === 'done' || s === 'complete') return STAGE_ORDER.length;
+    const i = STAGE_ORDER.indexOf(s);
+    return i === -1 ? 1 : i;
+  }
+
+  function renderBanner(job) {
+    const el = qs('banner');
+    const s = job.status;
+    el.hidden = false;
+    el.className = 'banner';
+    if (s === 'success' || s === 'done') {
+      el.className += ' banner-ok';
+      el.innerHTML = 'Conversion complete ? ready to download.';
+    } else if (s === 'failed' || s === 'error') {
+      el.className += ' banner-error';
+      el.innerHTML = 'Conversion failed. See details below.';
+    } else if (s === 'running') {
+      el.className += ' banner-running';
+      el.innerHTML = '<span class="spinner"></span>Conversion in progress...';
+    } else {
+      el.className += ' banner-queued';
+      el.innerHTML = '<span class="spinner"></span>Job queued ? starting shortly...';
+    }
+  }
+
+  function renderInfoCells(job) {
+    const dir = `${(job.source_format||'?').toUpperCase()} ? ${(job.target_format||'?').toUpperCase()}`;
+    const filename = (job.input_path || 'n/a').replace(/.*[\\/]/, '');
+    qs('cell-id').textContent     = job.job_id || '—';
+    qs('cell-dir').textContent    = dir;
+    qs('cell-status').textContent = job.status || '—';
+    qs('cell-stage').textContent  = job.stage  || '?';
+    qs('cell-input').textContent  = filename;
+    const timeout = job.timeout_seconds ? `${job.timeout_seconds}s` : '?';
+    const method = job.conversion_method || (job.result && job.result.conversion_method) || 'pending';
+    qs('cell-timeout').textContent = `${timeout} ? ${method}`;
+  }
+
+  function renderTimeline(job) {
+    const curIdx = stageIndex(job.stage);
+    const isDone = job.status === 'success' || job.status === 'done';
+    qs('timeline').innerHTML = STAGES.map((s, i) => {
+      const done   = isDone || i < curIdx;
+      const active = !isDone && i === curIdx;
+      let cls = 'tl-item';
+      if (done)   cls += ' done';
+      if (active) cls += ' active';
+      return `<div class="${cls}">
+        <div class="tl-num">${String(i+1).padStart(2,'0')}</div>
+        <div class="tl-name">${esc(s.label)}</div>
+        <div class="tl-agent">${esc(s.agent)}</div>
+      </div>`;
+    }).join('');
+  }
+
+  function renderDownloads(job) {
+    const isSuccess = job.status === 'success' || job.status === 'done';
+    const sec = qs('downloads-section');
+
+    if (!isSuccess) { sec.hidden = true; return; }
+    sec.hidden = false;
+
+    const id  = encodeURIComponent(job.job_id);
+    const to  = (job.target_format || 'output').toUpperCase();
+    const grid = qs('download-grid');
+
+    // Update section heading to remove "? II" numbering on downloads section
+    qs('section-folio').textContent = '? II ? Job details';
+
+    grid.innerHTML = `
+      <a class="dl-btn dl-btn-primary"
+         href="/api/jobs/${id}/artifact/main.pdf"
+         download="converted-${esc(job.target_format||'output')}.pdf">
+        <span class="dl-icon">?</span>
+        <span class="dl-title">Download PDF</span>
+        <span class="dl-sub">Compiled ${esc(to)} paper</span>
+      </a>
+      <a class="dl-btn dl-btn-secondary"
+         href="/api/jobs/${id}/artifact/main.tex"
+         download="main.tex">
+        <span class="dl-icon">?</span>
+        <span class="dl-title">Download .tex source</span>
+        <span class="dl-sub">LaTeX source for ${esc(to)}</span>
+      </a>
+      <a class="dl-btn dl-btn-accent"
+         href="/api/jobs/${id}/download"
+         download="bundle.zip">
+        <span class="dl-icon">?</span>
+        <span class="dl-title">Download ZIP bundle</span>
+        <span class="dl-sub">PDF + source + logs</span>
+      </a>
+    `;
+  }
+
+  function renderError(job) {
+    const panel = qs('error-panel');
+    if (!job.error && !job.failure_kind) { panel.hidden = true; return; }
+    panel.hidden = false;
+    qs('error-kind').textContent = `Failure: ${job.failure_kind || 'unknown'}`;
+    qs('error-msg').textContent  = `${job.error?.message || 'No error message recorded.'}`;
+  }
+
+  function renderReports(job) {
+    const result  = job.result || {};
+    const reports = result.reports || {};
+    const keys    = Object.keys(reports);
+    const sec     = qs('reports-section');
+    if (!keys.length) { sec.hidden = true; return; }
+    sec.hidden = false;
+
+    qs('reports-panels').innerHTML = keys.map(k => `
+      <div class="detail-panel">
+        <h3>${esc(k)}</h3>
+        <pre>${esc(JSON.stringify(reports[k], null, 2))}</pre>
+      </div>
+    `).join('');
+  }
+
+  function renderSectionHead(job) {
+    const s = job.status;
+    const map = {
+      success: ['Conversion complete.', 'Ready to download below.'],
+      done:    ['Conversion complete.', 'Ready to download below.'],
+      failed:  ['Conversion failed.',   'See error details below.'],
+      error:   ['Conversion failed.',   'See error details below.'],
+      running: ['In progress...',         `Currently: ${job.stage || 'processing'}`],
+      queued:  ['Job queued.',          'Starting shortly...'],
+    };
+    const [title, note] = map[s] || ['Processing…', ''];
+    qs('section-title').textContent = title;
+    qs('section-note').textContent  = note;
+  }
+
+  function renderJob(job) {
+    renderBanner(job);
+    renderSectionHead(job);
+    renderInfoCells(job);
+    renderTimeline(job);
+    renderDownloads(job);
+    renderError(job);
+    renderReports(job);
+  }
+
+  // ── Polling loop ─────────────────────────────────────────────────────────────
+  async function main() {
+    const jobId = jobIdFromUrl();
+    if (!jobId) { qs('not-found').hidden = false; return; }
+
+    document.title = `Job ${jobId.slice(0,8)}... ? Paper Parser`;
+
+    const TERMINAL = new Set(['success','done','failed','error']);
+    let failCount = 0;
+    let pollTimer = null;
+    let source = null;
+
+    const refresh = async () => {
+      try {
+        const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+        if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
+        const job = await res.json();
+        failCount = 0;
+        renderJob(job);
+        if (TERMINAL.has(job.status) && pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+        return job;
+      } catch (err) {
+        failCount++;
+        const el = qs('banner');
+        el.hidden = false;
+        el.className = 'banner banner-error';
+        el.textContent = `Engine unreachable (${err.message}). Retrying...`;
+        if (failCount >= 5 && pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+        throw err;
+      }
+    };
+
+    const startPollingFallback = async () => {
+      if (pollTimer) return;
+      await refresh().catch(() => {});
+      pollTimer = setInterval(() => { refresh().catch(() => {}); }, 2500);
+    };
+
+    if (!window.EventSource) {
+      await startPollingFallback();
+      return;
+    }
+
+    source = new EventSource(`/api/jobs/${encodeURIComponent(jobId)}/events`);
+
+    source.addEventListener('job', (evt) => {
+      try {
+        const job = JSON.parse(evt.data);
+        failCount = 0;
+        renderJob(job);
+        if (TERMINAL.has(job.status)) {
+          source.close();
+          source = null;
+        }
+      } catch (err) {
+        console.error('SSE parse error', err);
+      }
+    });
+
+    source.addEventListener('error', async () => {
+      const el = qs('banner');
+      el.hidden = false;
+      el.className = 'banner banner-error';
+      el.textContent = 'Engine unreachable (stream disconnected). Falling back to polling...';
+      if (source) {
+        source.close();
+        source = null;
+      }
+      await startPollingFallback();
+    });
+
+    source.addEventListener('done', () => {
+      if (source) {
+        source.close();
+        source = null;
+      }
+    });
+  }
+
+  main();
+</script>
 </body>
 </html>

@@ -3,9 +3,10 @@ import time
 
 from paper_conversion_system.cpr import parse_project_to_cpr
 from paper_conversion_system.models import CanonicalPaperRepresentation, Figure, Reference, Section, Table
+from paper_conversion_system.pdf_artifact_hygiene import enforce_pdf_artifact_contract
 from paper_conversion_system.pdf_cleanup import clean_pdf_text
-from paper_conversion_system.pdf_ingest import _detect_equation_regions, _extract_frontmatter, _extract_sections
-from paper_conversion_system.pdf_postprocess import _add_subsection_markers, _separate_references
+from paper_conversion_system.pdf_ingest import _detect_equation_regions, _detect_table_regions, _extract_frontmatter, _extract_sections
+from paper_conversion_system.pdf_postprocess import _add_subsection_markers, _clean_section_content, _separate_references
 from paper_conversion_system.render import _guess_bibtex_fields, _remove_equation_residue, render_cpr_to_target
 
 
@@ -100,8 +101,9 @@ def test_pdf_table_asset_is_reinserted_near_anchor(tmp_path: Path):
     out = tmp_path / "out"
     render_cpr_to_target(cpr, "acm", out)
     text = (out / "main.tex").read_text(encoding="utf-8")
-    assert "\\includegraphics[width=\\linewidth]{artifacts/tables/table_p4_1.png}" in text
-    assert text.index("The validation performance rate was measured carefully.") < text.index("\\begin{table}[H]")
+    assert "\\begin{table*}[!t]" in text
+    assert "\\includegraphics[width=\\textwidth,height=0.30\\textheight,keepaspectratio]{artifacts/tables/table_p4_1.png}" in text
+    assert text.index("The validation performance rate was measured carefully.") < text.index("\\begin{table*}[!t]")
 
 
 def test_pdf_references_render_as_thebibliography_when_requested(tmp_path: Path):
@@ -234,8 +236,126 @@ def test_pdf_artifact_text_is_removed_when_visual_fallback_is_inserted(tmp_path:
     text = (out / "main.tex").read_text(encoding="utf-8")
     assert "TABLE III MAXIMUM OF 60 RSSI VALUES RESULTS Actual points Estimated points Difference" not in text
     assert "Equation block x = y + z (1)" not in text
-    assert "\\includegraphics[width=\\linewidth]{artifacts/tables/table_p4_1.png}" in text
-    assert "\\includegraphics[width=0.72\\linewidth]{artifacts/equations/equation_p4_1.png}" in text
+    assert "\\includegraphics[width=\\textwidth,height=0.30\\textheight,keepaspectratio]{artifacts/tables/table_p4_1.png}" in text
+    assert "\\includegraphics[width=0.72\\linewidth,height=0.16\\textheight,keepaspectratio]{artifacts/equations/equation_p4_1.png}" in text
+
+
+def test_pdf_artifact_contract_centralizes_visual_scrub_metadata():
+    cpr = CanonicalPaperRepresentation(
+        title="Contract",
+        authors=["Alice"],
+        sections=[Section(title="Results", content="Body")],
+        tables=[
+            Table(
+                label="tab:i",
+                caption="ACCURATE TIMING RESULTS",
+                latex="\\centering\n\\includegraphics{artifacts/tables/table_p1_1.png}",
+                placement="H",
+            ),
+            Table(
+                label="tab:bad",
+                caption=", this is really prose",
+                latex="\\centering\n\\includegraphics{artifacts/tables/table_p1_2.png}",
+                placement="H",
+            ),
+        ],
+        metadata={
+            "ingest_mode": "pdf",
+            "table_section_map": {"tab:i": "Results", "tab:bad": "Results"},
+            "table_anchor_map": {"tab:i": "The timing results are below."},
+            "table_text_map": {"tab:i": "TABLE I ACCURATE TIMING RESULTS 10 20"},
+            "equation_artifacts": [
+                {
+                    "label": "eqimg:1:1",
+                    "path": "artifacts/equations/equation_p1_1.png",
+                    "section_title": "Results",
+                    "raw_text": "x = y + z (1)",
+                }
+            ],
+        },
+    )
+    enforce_pdf_artifact_contract(cpr)
+    manifest = cpr.metadata["pdf_artifact_manifest"]
+    assert [table.label for table in cpr.tables] == ["tab:i"]
+    assert any(item["kind"] == "table" and item["label"] == "tab:i" for item in manifest)
+    assert any(item["kind"] == "equation" and item["label"] == "eqimg:1:1" for item in manifest)
+    assert "ACCURATE TIMING RESULTS" in cpr.metadata["artifact_scrub_map"]["tab:i"]
+
+
+def test_render_uses_pdf_artifact_contract_for_scrubbing(tmp_path: Path):
+    cpr = CanonicalPaperRepresentation(
+        title="Base Scrub",
+        authors=["Alice"],
+        sections=[
+            Section(
+                title="Results",
+                content=(
+                    "The table is below. TABLE I ACCURATE TIMING RESULTS "
+                    "Client Server 10 20 The prose continues."
+                ),
+            )
+        ],
+        tables=[
+            Table(
+                label="tab:i",
+                caption="ACCURATE TIMING RESULTS",
+                latex="\\centering\n\\includegraphics{artifacts/tables/table_p1_1.png}",
+                placement="H",
+            )
+        ],
+        metadata={
+            "ingest_mode": "pdf",
+            "table_section_map": {"tab:i": "Results"},
+            "table_text_map": {"tab:i": "TABLE I ACCURATE TIMING RESULTS Client Server 10 20"},
+        },
+    )
+    out = tmp_path / "out"
+    render_cpr_to_target(cpr, "acm", out)
+    text = (out / "main.tex").read_text(encoding="utf-8")
+    assert "TABLE I ACCURATE TIMING RESULTS Client Server 10 20" not in text
+    assert "\\begin{table*}[!t]" in text
+
+
+def test_pdf_visual_table_residue_is_scrubbed_from_partial_overlap(tmp_path: Path):
+    cpr = CanonicalPaperRepresentation(
+        title="Partial Table Cleanup",
+        authors=["Alice"],
+        sections=[
+            Section(
+                title="Results",
+                content=(
+                    "The comparison was run carefully. THE CLIENT AND SERVER SIDE. "
+                    "THESE ARE AVERAGE TIMES OVER SEVERAL TRIALS. Length Client Server "
+                    "10,000 1 0.8 100,000 3.3 4.6 As seen in , the server takes longer."
+                ),
+            )
+        ],
+        tables=[
+            Table(
+                label="tab:i",
+                caption="A TABLE SHOWING THE DIFFERENCE IN TIME SPENT GENERATING HASH CHAINS",
+                latex="\\centering\n\\includegraphics[width=\\linewidth]{artifacts/tables/table_p5_1.png}",
+                placement="H",
+            )
+        ],
+        metadata={
+            "ingest_mode": "pdf",
+            "table_section_map": {"tab:i": "Results"},
+            "table_text_map": {
+                "tab:i": (
+                    "TABLE I A TABLE SHOWING THE DIFFERENCE IN TIME SPENT GENERATING HASH "
+                    "CHAINS ON THE CLIENT AND SERVER SIDE. THESE ARE AVERAGE TIMES OVER SEVERAL TRIALS. "
+                    "Length Client Server 10,000 1 0.8 100,000 3.3 4.6"
+                )
+            },
+        },
+    )
+    out = tmp_path / "out"
+    render_cpr_to_target(cpr, "acm", out)
+    text = (out / "main.tex").read_text(encoding="utf-8")
+    assert "THE CLIENT AND SERVER SIDE" not in text
+    assert "10,000 1 0.8" not in text
+    assert "As seen in ," not in text
 
 
 def test_pdf_equation_residue_removes_multiply_x_variant(tmp_path: Path):
@@ -274,7 +394,7 @@ def test_pdf_equation_residue_removes_multiply_x_variant(tmp_path: Path):
     assert "TP + TN N x 100 (4)" not in text
     assert "PERFORMANCE MEASUREMENT Actual" not in text
     assert "Negative True False" not in text
-    assert "\\includegraphics[width=0.72\\linewidth]{artifacts/equations/equation_p4_1.png}" in text
+    assert "\\includegraphics[width=0.72\\linewidth,height=0.16\\textheight,keepaspectratio]{artifacts/equations/equation_p4_1.png}" in text
 
 
 def test_pdf_equation_artifacts_anchor_by_equation_number(tmp_path: Path):
@@ -320,8 +440,8 @@ def test_pdf_equation_artifacts_anchor_by_equation_number(tmp_path: Path):
     out = tmp_path / "out"
     render_cpr_to_target(cpr, "acm", out)
     text = (out / "main.tex").read_text(encoding="utf-8")
-    eq1 = "\\includegraphics[width=0.72\\linewidth]{artifacts/equations/equation_wrong_section_1.png}"
-    eq2 = "\\includegraphics[width=0.72\\linewidth]{artifacts/equations/equation_wrong_section_2.png}"
+    eq1 = "\\includegraphics[width=0.72\\linewidth,height=0.16\\textheight,keepaspectratio]{artifacts/equations/equation_wrong_section_1.png}"
+    eq2 = "\\includegraphics[width=0.72\\linewidth,height=0.16\\textheight,keepaspectratio]{artifacts/equations/equation_wrong_section_2.png}"
     assert text.index("equation (1).") < text.index(eq1) < text.index("Where the variables")
     assert text.index("equation (2).") < text.index(eq2) < text.index("The validation text")
     assert text.index(eq2) < text.index("\\section{Experiment}")
@@ -604,6 +724,63 @@ def test_equation_region_groups_multiline_system_without_table_rows():
     assert regions[0]["equation_number"] == "2"
 
 
+def test_pdf_table_region_detects_same_line_caption():
+    lines = [
+        {"text": "II. EXPERIMENT", "bbox": (72.0, 100.0, 180.0, 112.0)},
+        {"text": "The results are summarized below.", "bbox": (72.0, 126.0, 250.0, 138.0)},
+        {"text": "TABLE III Maximum RSSI values across devices", "bbox": (72.0, 166.0, 280.0, 178.0)},
+        {"text": "Actual points Estimated points Difference", "bbox": (72.0, 188.0, 300.0, 200.0)},
+        {"text": "1.0 1.2 0.2", "bbox": (72.0, 206.0, 150.0, 218.0)},
+        {"text": "The next paragraph resumes after the table.", "bbox": (72.0, 268.0, 330.0, 280.0)},
+    ]
+    regions = _detect_table_regions(lines, 595.0)
+    assert len(regions) == 1
+    assert regions[0]["label"] == "tab:iii"
+    assert regions[0]["caption"] == "Maximum RSSI values across devices"
+    assert regions[0]["data_lines"] == [
+        "Actual points Estimated points Difference",
+        "1.0 1.2 0.2",
+    ]
+    assert regions[0]["visual_bbox"].y0 > regions[0]["bbox"].y0
+    assert regions[0]["anchor_text"] == "The results are summarized below."
+
+
+def test_pdf_table_region_ignores_body_reference_sentence():
+    lines = [
+        {"text": "Table 1 shows the final calibration results for each participant.", "bbox": (72.0, 126.0, 370.0, 138.0)},
+        {"text": "The following paragraph is normal body text.", "bbox": (72.0, 146.0, 330.0, 158.0)},
+    ]
+    assert _detect_table_regions(lines, 595.0) == []
+
+
+def test_pdf_table_region_extends_caption_and_drops_trailing_body():
+    lines = [
+        {"text": "TABLE I A TABLE SHOWING THE DIFFERENCE IN TIME SPENT GENERATING HASH", "bbox": (312.0, 52.0, 563.0, 64.0)},
+        {"text": "CHAINS ON THE CLIENT AND SERVER SIDE. THESE ARE AVERAGE TIMES", "bbox": (312.0, 66.0, 563.0, 78.0)},
+        {"text": "OVER SEVERAL TRIALS.", "bbox": (350.0, 80.0, 510.0, 92.0)},
+        {"text": "Length", "bbox": (350.0, 108.0, 390.0, 120.0)},
+        {"text": "Client", "bbox": (420.0, 108.0, 460.0, 120.0)},
+        {"text": "10,000 1 0.8", "bbox": (350.0, 136.0, 500.0, 148.0)},
+        {"text": "100,000 3.3 4.6", "bbox": (350.0, 154.0, 510.0, 166.0)},
+        {"text": "concurrently (i.e., both client and server are running operations", "bbox": (312.0, 178.0, 563.0, 190.0)},
+    ]
+    regions = _detect_table_regions(lines, 612.0)
+    assert len(regions) == 1
+    assert regions[0]["caption"] == (
+        "A TABLE SHOWING THE DIFFERENCE IN TIME SPENT GENERATING HASH "
+        "CHAINS ON THE CLIENT AND SERVER SIDE. THESE ARE AVERAGE TIMES OVER SEVERAL TRIALS"
+    )
+    assert regions[0]["data_lines"][-1] == "100,000 3.3 4.6"
+    assert "concurrently" not in " ".join(regions[0]["data_lines"])
+
+
+def test_pdf_table_region_rejects_lowercase_fragment_after_table_number():
+    lines = [
+        {"text": "TABLE II, these systems include both single-factor and two-", "bbox": (312.0, 708.0, 563.0, 720.0)},
+    ]
+    assert _detect_table_regions(lines, 612.0) == []
+
+
 def test_pdf_figure_is_attached_to_matching_section_without_explicit_map(tmp_path: Path):
     cpr = CanonicalPaperRepresentation(
         title="Figure placement",
@@ -632,6 +809,48 @@ def test_pdf_figure_is_attached_to_matching_section_without_explicit_map(tmp_pat
     text = (out / "main.tex").read_text(encoding="utf-8")
     assert text.index("\\section{Method}") < text.index("\\begin{figure}[tbp]")
     assert text.index("\\begin{figure}[tbp]") < text.index("\\section{Evaluation}")
+
+
+def test_pdf_render_dedupes_duplicate_figure_paths_and_caps_size(tmp_path: Path):
+    cpr = CanonicalPaperRepresentation(
+        title="Figure dedup",
+        authors=["Alice"],
+        sections=[Section(title="Method", content="The workflow appears in Figure 1 and Figure 2.")],
+        figures=[
+            Figure(label="fig:1", caption="Workflow overview", path="figures/shared.png"),
+            Figure(label="fig:2", caption="Workflow overview duplicate", path="figures/shared.png"),
+        ],
+        metadata={"ingest_mode": "pdf"},
+    )
+    out = tmp_path / "out"
+    render_cpr_to_target(cpr, "ieee", out)
+    text = (out / "main.tex").read_text(encoding="utf-8")
+    assert text.count("\\includegraphics[") == 1
+    assert "height=0.42\\textheight,keepaspectratio" in text
+
+
+def test_pdf_section_cleanup_preserves_inline_figure_references():
+    cpr = CanonicalPaperRepresentation(
+        title="Inline refs",
+        authors=["Alice"],
+        sections=[
+            Section(
+                title="Method",
+                content=(
+                    "The workflow is summarized in Figure 1 before we move into evaluation.\n"
+                    "Figure 1. Workflow overview for the validation pipeline.\n"
+                    "TABLE II MAXIMUM RSSI VALUES ACROSS DEVICES\n"
+                    "The remaining paragraph should stay intact."
+                ),
+            )
+        ],
+    )
+    cleaned = _clean_section_content(cpr)
+    content = cleaned.sections[0].content
+    assert "The workflow is summarized in Figure 1 before we move into evaluation." in content
+    assert "The remaining paragraph should stay intact." in content
+    assert "Figure 1. Workflow overview" not in content
+    assert "TABLE II MAXIMUM RSSI VALUES" not in content
 
 
 def test_pdf_render_preserves_paragraph_breaks_for_acm(tmp_path: Path):

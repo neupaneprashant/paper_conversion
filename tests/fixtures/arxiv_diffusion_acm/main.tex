@@ -1,0 +1,24 @@
+\documentclass[sigconf]{acmart}
+\title{Denoising Diffusion Models in Practice}
+\author{J. Ho}
+\affiliation{\institution{Open Research Lab}\country{USA}}
+\email{jho@example.org}
+\begin{document}
+\begin{abstract}
+Diffusion models iteratively denoise random noise into structured samples.
+\end{abstract}
+\keywords{diffusion models, generative modeling}
+\maketitle
+\section{Introduction}
+Likelihood-based generation can be stable and high quality.
+\section{Training}
+The simplified loss is
+\begin{equation}
+\mathcal{L}_{simple}=\mathbb{E}_{t,x,\epsilon}\left[\|\epsilon-\epsilon_\theta(x_t,t)\|_2^2\right].
+\end{equation}
+\section{Conclusion}
+Strong guidance and schedulers improve final fidelity.
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+\end{document}
+

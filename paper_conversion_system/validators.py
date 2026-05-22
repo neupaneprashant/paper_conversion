@@ -26,16 +26,46 @@ EXPECTED_SECTIONS = {
 # output should never contain ACM-only macros.
 FORBIDDEN_OUTPUT_PATTERNS = {
     "ieee": [
-        r"\\ccsdesc",
+        # ACM document class / package
+        r"\\documentclass\[[^\]]*\]\{acmart\}",
+        # ACM-only structural environments
         r"\\begin\{CCSXML\}",
         r"\\begin\{acks\}",
-        r"\\documentclass\[[^\]]*\]\{acmart\}",
+        r"\\ccsdesc",
+        # ACM ceremony / metadata commands (must be stripped by Friday)
+        r"\\setcopyright\b",
+        r"\\copyrightyear\b",
+        r"\\acmYear\b",
         r"\\acmConference\b",
+        r"\\acmBooktitle\b",
+        r"\\acmDOI\b",
+        r"\\acmISBN\b",
+        r"\\acmPrice\b",
+        r"\\acmJournal\b",
+        r"\\acmVolume\b",
+        r"\\acmNumber\b",
+        r"\\acmArticle\b",
+        r"\\acmMonth\b",
+        r"\\acmArticleSeq\b",
+        r"\\acmSubmissionID\b",
+        r"\\authornote\b",
+        r"\\authorsaddresses\b",
+        r"\\received\b",
     ],
     "acm": [
-        r"\\begin\{IEEEkeywords\}",
+        # IEEE document class / package
         r"\\documentclass\[[^\]]*\]\{IEEEtran\}",
+        # IEEE-only structural environments
+        r"\\begin\{IEEEkeywords\}",
+        r"\\begin\{IEEEbiography\}",
+        # IEEE-only macros (must be stripped by April)
         r"\\IEEEPARstart\b",
+        r"\\IEEEauthorblockN\b",
+        r"\\IEEEauthorblockA\b",
+        r"\\IEEEoverridecommandlockouts\b",
+        r"\\IEEEpeerreviewmaketitle\b",
+        r"\\IEEEpubid\b",
+        r"\\IEEEtriggeratref\b",
     ],
 }
 
@@ -95,6 +125,9 @@ def validate_project(project_dir: Path, cpr: CanonicalPaperRepresentation, targe
 
     # L2 - citation/bibliography presence.
     summary.citation_compliance = _check_citation_compliance(text, cpr, summary)
+    for warning in cpr.metadata.get("reference_warnings", []) or []:
+        summary.warnings.append(str(warning))
+    _warn_malformed_references(cpr, summary)
 
     # L2 - forbidden (leaked) patterns for the target template.
     for pattern in FORBIDDEN_OUTPUT_PATTERNS.get(target_format, []):
@@ -192,3 +225,15 @@ def _check_citation_compliance(text: str, cpr: CanonicalPaperRepresentation, sum
             )
 
     return "pass"
+
+
+def _warn_malformed_references(cpr: CanonicalPaperRepresentation, summary: ValidationSummary) -> None:
+    suspicious: list[str] = []
+    for ref in cpr.references:
+        raw = str(ref.raw or "")
+        if len(raw) > 500:
+            suspicious.append(ref.key)
+    if suspicious:
+        summary.warnings.append(
+            f"Reference entries may be malformed or over-merged (raw length > 500): {suspicious[:8]}"
+        )

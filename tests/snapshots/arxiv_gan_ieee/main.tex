@@ -1,0 +1,45 @@
+\documentclass[sigconf]{acmart}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{placeins}
+\usepackage{amsmath}
+\usepackage{graphicx}
+
+\graphicspath{{./}}
+
+\begin{document}
+\title{Generative Adversarial Networks in Low Data Regimes}
+\author{I. Goodfellow}
+\author{Team}
+\begin{abstract}
+This note summarizes training behavior of adversarial objectives.
+\end{abstract}
+
+\setcopyright{none}
+\settopmatter{printacmref=false, printccs=false}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\maketitle
+\thispagestyle{plain}
+\pagestyle{plain}
+\section{Introduction}
+GANs train generator and discriminator simultaneously.
+
+\FloatBarrier
+\section{Objective}
+The minimax game is
+\begin{equation}
+\min_G \max_D \mathbb{E}_{x\sim p_{data}}[\log D(x)] + \mathbb{E}_{z\sim p(z)}[\log(1-D(G(z)))].
+\end{equation}
+
+\FloatBarrier
+\section{Results}
+Small-scale tests recover plausible textures and edges.
+
+\FloatBarrier
+\section{Conclusion}
+Stability depends on architecture and optimization details.
+
+\FloatBarrier
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+\end{document}
