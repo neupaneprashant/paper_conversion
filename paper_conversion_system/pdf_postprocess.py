@@ -335,6 +335,13 @@ def _looks_like_standalone_table_caption(line: str) -> bool:
     if not match:
         return False
     caption = match.group(1).strip()
+    if not caption:
+        return False
+    # A real caption title leads with a capital ("TABLE I FIRST RSSI ...").
+    # An in-sentence cross-reference continues in lowercase prose
+    # ("TABLE I shows the estimated positions") and must not be deleted.
+    if caption[0].islower():
+        return False
     return len(caption) >= 12 and len(caption.split()) >= 3
 
 
